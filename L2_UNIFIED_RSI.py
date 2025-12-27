@@ -49,7 +49,7 @@ def write_json(p: Path, obj: Any, indent: int=2):
 def unified_diff(old: str, new: str, name: str) -> str:
     return ''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), fromfile=name, tofile=name))
 SAFE_FUNCS: Dict[str, Callable] = {'sin': math.sin, 'cos': math.cos, 'tan': math.tan, 'exp': math.exp, 'tanh': math.tanh, 'abs': abs, 'sqrt': lambda x: math.sqrt(abs(x) + 1e-12), 'log': lambda x: math.log(abs(x) + 1e-12), 'pow2': lambda x: x * x, 'sigmoid': lambda x: 1.0 / (1.0 + math.exp(-clamp(x, -500, 500))), 'gamma': lambda x: math.gamma(abs(x) + 1e-09) if abs(x) < 170 else float('inf'), 'erf': math.erf, 'ceil': math.ceil, 'floor': math.floor, 'sign': lambda x: math.copysign(1.0, x)}
-SAFE_BUILTINS = {'abs': abs, 'min': min, 'max': max, 'float': float, 'int': int}
+SAFE_BUILTINS = {'abs': abs, 'min': min, 'max': max, 'float': float, 'int': int, 'len': len, 'range': range, 'list': list, 'sorted': sorted, 'reversed': reversed, 'sum': sum} # [NEW] Algorithmic Builtins
 SAFE_VARS = {'x'}
 
 class StepLimitExceeded(Exception): pass
@@ -141,10 +141,10 @@ def safe_exec(code: str, x: float, timeout_steps: int=1000) -> float:
         if 'run' not in env:
             return float('nan')
             
-        res = env['run'](float(x))
-        return float(res)
+        res = env['run'](x) # [MOD] Removed float() cast for List support
+        return res
     except StepLimitExceeded:
-        return float('nan') # Timeout penalty
+        return float('nan')
     except Exception:
         return float('nan')
 
@@ -234,26 +234,62 @@ class TaskSpec:
     n_hold: int = 96
     noise: float = 0.01
     stress_mult: float = 3.0
-TARGET_FNS = {'poly2': lambda x: 0.7 * x * x - 0.2 * x + 0.3, 'poly3': lambda x: 0.3 * x ** 3 - 0.5 * x + 0.1, 'sinmix': lambda x: math.sin(x) + 0.3 * math.cos(2 * x), 'absline': lambda x: abs(x) + 0.2 * x}
+    target_code: Optional[str] = None  # [NEW] Phase 3: Dynamic Target
+
+TARGET_FNS = {
+    'sort': lambda x: sorted(x),
+    'poly2': lambda x: 0.7 * x * x - 0.2 * x + 0.3, 
+    'poly3': lambda x: 0.3 * x ** 3 - 0.5 * x + 0.1, 
+    'sinmix': lambda x: math.sin(x) + 0.3 * math.cos(2 * x), 
+    'absline': lambda x: abs(x) + 0.2 * x
+}
 
 @dataclass
 class Batch:
-    x_tr: List[float]
-    y_tr: List[float]
-    x_ho: List[float]
-    y_ho: List[float]
-    x_st: List[float]
-    y_st: List[float]
+    x_tr: List[Any] # Changed from float to Any to support Lists
+    y_tr: List[Any]
+    x_ho: List[Any]
+    y_ho: List[Any]
+    x_st: List[Any]
+    y_st: List[Any]
 
 def sample_batch(rng: random.Random, t: TaskSpec) -> Batch:
-    f = TARGET_FNS.get(t.name, lambda x: x)
-    xs = lambda n, a, b: [a + (b - a) * rng.random() for _ in range(n)]
-    ys = lambda xv, n: [f(x) + rng.gauss(0, n) if n > 0 else f(x) for x in xv]
-    half = 0.5 * (t.x_max - t.x_min)
-    mid = 0.5 * (t.x_min + t.x_max)
-    x_tr, x_ho = (xs(t.n_train, t.x_min, t.x_max), xs(t.n_hold, t.x_min, t.x_max))
-    x_st = xs(t.n_hold, mid - half * t.stress_mult, mid + half * t.stress_mult)
-    return Batch(x_tr, ys(x_tr, t.noise), x_ho, ys(x_ho, t.noise), x_st, ys(x_st, t.noise * t.stress_mult))
+    # Phase 3: Dynamic Code Target
+    if t.target_code:
+        f = lambda x: safe_exec(t.target_code, x)
+    elif t.name == 'sort':
+        f = lambda x: sorted(x) # Explicitly define f for sort if not in TARGET_FNS (though it is)
+    else:
+        f = TARGET_FNS.get(t.name, lambda x: x)
+        
+    if t.name == 'sort':
+        # List Sorting Task
+        def gen_lists(k, min_len, max_len):
+            data = []
+            for _ in range(k):
+                l = rng.randint(min_len, max_len)
+                data.append([rng.randint(-100, 100) for _ in range(l)])
+            return data
+            
+        x_tr = gen_lists(t.n_train, 3, 10)
+        x_ho = gen_lists(t.n_hold, 10, 20)
+        x_st = gen_lists(t.n_hold, 20, 40)
+        
+        # Ground Truth
+        y_tr = [f(x) for x in x_tr]
+        y_ho = [f(x) for x in x_ho]
+        y_st = [f(x) for x in x_st]
+        return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st)
+
+    else:
+        # Standard Regression
+        xs = lambda n, a, b: [a + (b - a) * rng.random() for _ in range(n)]
+        ys = lambda xv, n: [f(x) + rng.gauss(0, n) if n > 0 else f(x) for x in xv]
+        half = 0.5 * (t.x_max - t.x_min)
+        mid = 0.5 * (t.x_min + t.x_max)
+        x_tr, x_ho = (xs(t.n_train, t.x_min, t.x_max), xs(t.n_hold, t.x_min, t.x_max))
+        x_st = xs(t.n_hold, mid - half * t.stress_mult, mid + half * t.stress_mult)
+        return Batch(x_tr, ys(x_tr, t.noise), x_ho, ys(x_ho, t.noise), x_st, ys(x_st, t.noise * t.stress_mult))
 
 @dataclass
 class Genome:
@@ -287,13 +323,35 @@ SCORE_W_HOLD = 0.48
 SCORE_W_STRESS = 0.3
 SCORE_W_TRAIN = 0.05
 
-def mse_exec(code: str, xs: List[float], ys: List[float]) -> Tuple[bool, float, str]:
+def calc_error(p: Any, t: Any) -> float:
+    """Recursively calculate squared error between prediction and target."""
+    if isinstance(t, (int, float)):
+        if isinstance(p, (int, float)):
+            return (p - t) ** 2
+        return 1e6 # Type mismatch penalty
+    elif isinstance(t, list):
+        if not isinstance(p, list):
+            return 1e6
+        # List comparison
+        if len(p) != len(t):
+            # Penalty for length mismatch
+            return 1000.0 * abs(len(p) - len(t))
+        # Element-wise error
+        return sum(calc_error(pv, tv) for pv, tv in zip(p, t))
+    return 1e6 # Unknown type penalty
+
+def mse_exec(code: str, xs: List[Any], ys: List[Any]) -> Tuple[bool, float, str]:
     ok, err = validate_code(code)
     if not ok:
         return (False, float('inf'), err)
     try:
-        se = sum(((safe_exec(code, x) - y) ** 2 for x, y in zip(xs, ys)))
-        return (True, se / max(1, len(xs)), None)
+        total_err = 0.0
+        for x, y in zip(xs, ys):
+            pred = safe_exec(code, x)
+            if pred is None: return (False, float('inf'), "No return")
+            total_err += calc_error(pred, y)
+        
+        return (True, total_err / max(1, len(xs)), None)
     except Exception as e:
         return (False, float('inf'), str(e))
 
@@ -395,12 +453,84 @@ def op_graft_library(rng: random.Random, expr: str) -> str:
         return new if ok else expr
     except:
         return expr
+def op_tweak_const(rng: random.Random, stmts: List[str]) -> List[str]:
+    """Micro-mutation: Tweak numerical constants."""
+    if not stmts: return stmts
+    new_stmts = stmts[:]
+    idx = rng.randint(0, len(new_stmts)-1)
+    
+    def _tweak_node(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            val = node.value
+            if isinstance(val, bool): return node
+            # Gaussian pertubation
+            new_val = val + rng.gauss(0, 0.1 * abs(val) + 0.01)
+            # Occasional sign flip or zeroing
+            if rng.random() < 0.05: new_val = -val
+            if rng.random() < 0.05: new_val = 0
+            return ast.Constant(value=new_val)
+        return node
+
+    class TweakTransformer(ast.NodeTransformer):
+        def visit_Constant(self, node):
+            return _tweak_node(node)
+
+    try:
+        tree = ast.parse(new_stmts[idx], mode='exec')
+        new_tree = TweakTransformer().visit(tree)
+        new_stmts[idx] = _to_src(new_tree)
+    except:
+        pass
+    return new_stmts
+
+def op_change_binary(rng: random.Random, stmts: List[str]) -> List[str]:
+    """Swap binary operators (+, -, *, /)."""
+    if not stmts: return stmts
+    new_stmts = stmts[:]
+    idx = rng.randint(0, len(new_stmts)-1)
+    
+    pops = [ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow]
+    
+    class OpTransformer(ast.NodeTransformer):
+        def visit_BinOp(self, node):
+            if rng.random() < 0.5:
+                # Replace operator
+                new_op = rng.choice(pops)()
+                return ast.BinOp(left=node.left, op=new_op, right=node.right)
+            return node
+
+    try:
+        tree = ast.parse(new_stmts[idx], mode='exec')
+        new_tree = OpTransformer().visit(tree)
+        new_stmts[idx] = _to_src(new_tree)
+    except:
+        pass
+    return new_stmts
+
+def op_list_manipulation(rng: random.Random, stmts: List[str]) -> List[str]:
+    """Insert list operations (swaps, access)."""
+    if not stmts: return stmts
+    new_stmts = stmts[:]
+    idx = rng.randint(0, len(new_stmts))
+    
+    ops = [
+        f"v{rng.randint(0,3)} = x[{rng.randint(0,2)}]", # Read
+        f"if len(x) > {rng.randint(1,5)}: v{rng.randint(0,3)} = x[0]", # Safe Read
+        "v0, v1 = v1, v0", # Swap
+        f"v{rng.randint(0,3)} = sorted(x)" # Cheat/Hint
+    ]
+    new_stmts.insert(idx, rng.choice(ops))
+    return new_stmts
+
 OPERATORS: Dict[str, Callable[[random.Random, List[str]], List[str]]] = {
     'insert_assign': op_insert_assign,
     'insert_if': op_insert_if,
     'insert_while': op_insert_while,
     'delete_stmt': op_delete_stmt, 
-    'modify_line': op_modify_line
+    'modify_line': op_modify_line,
+    'tweak_const': op_tweak_const,
+    'change_binary': op_change_binary,
+    'list_manip': op_list_manipulation # [NEW] For Sorting
 }
 PRIMITIVE_OPS = list(OPERATORS.keys())
 OPERATORS_LIB: Dict[str, Dict] = {}
@@ -559,7 +689,31 @@ def maybe_evolve_operators_lib(rng: random.Random, threshold: int=10):
             name, spec = synthesize_new_operator(rng)
         OPERATORS_LIB[name] = spec
         return name
+        OPERATORS_LIB[name] = spec
+        return name
     return None
+
+class ProblemGenerator:
+    """Phase 3: Co-evolutionary Discriminator. Generates hard tasks."""
+    def __init__(self):
+        self.archive: List[Genome] = []
+    
+    def evolve_task(self, rng: random.Random, current_elites: List[Genome]) -> TaskSpec:
+        """Create a new task that challenges current elites."""
+        # 1. Start with a seed (random expression)
+        stmts = [f"return ({_random_expr(rng, depth=0)})"]
+        challenge = Genome(statements=stmts, gid="task_gen")
+        
+        # 2. Mutate to increase complexity
+        for _ in range(rng.randint(2, 5)):
+            op = rng.choice(['insert_assign', 'insert_if', 'modify_line'])
+            challenge.statements = OPERATORS[op](rng, challenge.statements)
+            
+        code = challenge.code
+        # 3. Create TaskSpec
+        name = f"gen_task_{sha256(code)[:6]}"
+        task = TaskSpec(name=name, target_code=code, x_min=-5.0, x_max=5.0)
+        return task
 
 def _rewrite_operators_block(src: str, new_lib: Dict) -> str:
     """Rewrite OPERATORS_LIB in source code with learned operators."""
@@ -709,6 +863,7 @@ class Universe:
     meta: MetaState
     pool: List[Genome]
     library: FunctionLibrary
+    discriminator: ProblemGenerator = field(default_factory=ProblemGenerator) # [NEW] Phase 3
     best: Optional[Genome] = None
     best_score: float = float('inf')
     best_hold: float = float('inf')
@@ -814,6 +969,24 @@ class Universe:
         if gen % 5 == 0:
             SURROGATE.train(self.history)
         return log
+
+    def co_evolve_step(self, gen: int, current_task: TaskSpec, pop_size: int) -> Tuple[Dict, Optional[TaskSpec]]:
+        """Phase 3 Loop: Identify if we need a new task."""
+        # 1. Run standard solver step
+        log = self.step(gen, current_task, pop_size)
+        
+        # 2. Check if current task is "Solved" (Error < 1.0)
+        # If solved, let Discriminator generate a harder task
+        new_task = None
+        if self.best_score < 1.0:
+            # Task Solved! Challenge me.
+            rng = random.Random(self.seed + gen)
+            new_task = self.discriminator.evolve_task(rng, self.pool[:5])
+            # Reset score to force adaptation to new task
+            self.best_score = float('inf')
+            self.pool = [seed_genome(rng) for _ in range(pop_size)] # Reseed for fairness
+            
+        return log, new_task
 
     def snapshot(self) -> Dict:
         return {'uid': self.uid, 'seed': self.seed, 'meta': asdict(self.meta), 'best': asdict(self.best) if self.best else None, 'best_score': self.best_score, 'best_hold': self.best_hold, 'best_stress': self.best_stress, 'pool': [asdict(g) for g in self.pool[:20]], 'library': self.library.snapshot(), 'history': self.history[-50:]}
