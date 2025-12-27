@@ -18,7 +18,7 @@ Double-click **`run_infinite_rsi.bat`** to start the infinite optimization loop.
 > 2. Place them in the **SAME FOLDER** (e.g., Downloads).
 > 3. Ensure Windows didn't save the python file as `.txt` (e.g., `L2_UNIFIED_RSI.py.txt`). Remove `.txt` if present.
 
-### Command Line
+### Linux / Mac / Advanced (Manual)
 ```powershell
 python L2_UNIFIED_RSI.py rsi-loop --generations 500 --rounds 100
 ```
