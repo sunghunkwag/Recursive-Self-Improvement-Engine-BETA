@@ -172,7 +172,7 @@ class EvalResult:
     nodes: int
     score: float
     err: str = None
-SCORE_W_HOLD = 0.55
+SCORE_W_HOLD = 0.6
 SCORE_W_STRESS = 0.35
 SCORE_W_TRAIN = 0.05
 
