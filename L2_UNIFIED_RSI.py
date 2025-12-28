@@ -48,7 +48,15 @@ def write_json(p: Path, obj: Any, indent: int=2):
 
 def unified_diff(old: str, new: str, name: str) -> str:
     return ''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), fromfile=name, tofile=name))
-SAFE_FUNCS: Dict[str, Callable] = {'sin': math.sin, 'cos': math.cos, 'tan': math.tan, 'exp': math.exp, 'tanh': math.tanh, 'abs': abs, 'sqrt': lambda x: math.sqrt(abs(x) + 1e-12), 'log': lambda x: math.log(abs(x) + 1e-12), 'pow2': lambda x: x * x, 'sigmoid': lambda x: 1.0 / (1.0 + math.exp(-clamp(x, -500, 500))), 'gamma': lambda x: math.gamma(abs(x) + 1e-09) if abs(x) < 170 else float('inf'), 'erf': math.erf, 'ceil': math.ceil, 'floor': math.floor, 'sign': lambda x: math.copysign(1.0, x)}
+SAFE_FUNCS: Dict[str, Callable] = {
+    'sin': math.sin, 'cos': math.cos, 'tan': math.tan, 'exp': math.exp, 'tanh': math.tanh, 
+    'abs': abs, 'sqrt': lambda x: math.sqrt(abs(x) + 1e-12), 'log': lambda x: math.log(abs(x) + 1e-12), 
+    'pow2': lambda x: x * x, 'sigmoid': lambda x: 1.0 / (1.0 + math.exp(-clamp(x, -500, 500))), 
+    'gamma': lambda x: math.gamma(abs(x) + 1e-09) if abs(x) < 170 else float('inf'), 
+    'erf': math.erf, 'ceil': math.ceil, 'floor': math.floor, 'sign': lambda x: math.copysign(1.0, x),
+    # [NEW] Phase 3 Algorithmic
+    'sorted': sorted, 'reversed': reversed, 'max': max, 'min': min, 'sum': sum, 'len': len, 'list': list
+}
 SAFE_BUILTINS = {'abs': abs, 'min': min, 'max': max, 'float': float, 'int': int, 'len': len, 'range': range, 'list': list, 'sorted': sorted, 'reversed': reversed, 'sum': sum} # [NEW] Algorithmic Builtins
 SAFE_VARS = {'x'}
 
@@ -238,6 +246,9 @@ class TaskSpec:
 
 TARGET_FNS = {
     'sort': lambda x: sorted(x),
+    'reverse': lambda x: list(reversed(x)),
+    'max': lambda x: max(x) if x else 0,
+    'filter': lambda x: [v for v in x if v > 0], # Simple filter: positive only
     'poly2': lambda x: 0.7 * x * x - 0.2 * x + 0.3, 
     'poly3': lambda x: 0.3 * x ** 3 - 0.5 * x + 0.1, 
     'sinmix': lambda x: math.sin(x) + 0.3 * math.cos(2 * x), 
@@ -257,12 +268,13 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Batch:
     # Phase 3: Dynamic Code Target
     if t.target_code:
         f = lambda x: safe_exec(t.target_code, x)
-    elif t.name == 'sort':
-        f = lambda x: sorted(x) # Explicitly define f for sort if not in TARGET_FNS (though it is)
+    elif t.name in ('sort', 'reverse', 'filter', 'max'):
+        f = TARGET_FNS.get(t.name)
+        if not f: f = lambda x: sorted(x)
     else:
         f = TARGET_FNS.get(t.name, lambda x: x)
         
-    if t.name == 'sort':
+    if t.name in ('sort', 'reverse', 'filter', 'max'):
         # List Sorting Task
         def gen_lists(k, min_len, max_len):
             data = []
@@ -364,6 +376,31 @@ def calc_loss_sort(p: List[Any], t: List[Any]) -> float:
                 inversions += 1
     return float(inversions)
 
+def calc_heuristic_loss(p: Any, t: Any, task_name: str) -> float:
+    """Specialized Fitness functions for Hard Benchmarks."""
+    # 1. Base Checks
+    if task_name == 'sort': return calc_loss_sort(p, t)
+    
+    if isinstance(t, list):
+        if not isinstance(p, list): return 1e6
+        if len(p) != len(t): return 500.0 * abs(len(p) - len(t))
+        
+        # 2. Reverse Task
+        if task_name == 'reverse':
+            # Check if elements match in reverse order
+            # Actually, standard element-wise error against Target (already reversed) works fine
+            # But maybe add 'set match' bonus?
+            return sum(calc_error(pv, tv) for pv, tv in zip(p, t))
+            
+        # 3. Filter Task
+        if task_name == 'filter':
+            # Set match is crucial here, order matters less? No, order usually matters.
+            # Use standard list error
+            return sum(calc_error(pv, tv) for pv, tv in zip(p, t))
+            
+    # Default to generic recursive error
+    return calc_error(p, t)
+
 def mse_exec(code: str, xs: List[Any], ys: List[Any], task_name: str='') -> Tuple[bool, float, str]:
     ok, err = validate_code(code)
     if not ok:
@@ -374,8 +411,8 @@ def mse_exec(code: str, xs: List[Any], ys: List[Any], task_name: str='') -> Tupl
             pred = safe_exec(code, x)
             if pred is None: return (False, float('inf'), "No return")
             
-            if task_name == 'sort':
-                total_err += calc_loss_sort(pred, y)
+            if task_name in ('sort', 'reverse', 'max', 'filter'):
+                total_err += calc_heuristic_loss(pred, y, task_name)
             else:
                 total_err += calc_error(pred, y)
         
@@ -471,7 +508,7 @@ def op_grow(rng: random.Random, expr: str) -> str:
 def op_graft_library(rng: random.Random, expr: str) -> str:
     """Graft a library function (Gamma, Erf, etc.) into the expression."""
     try:
-        tools = ['gamma', 'erf', 'ceil', 'floor', 'sign', 'sqrt', 'log']
+        tools = list(SAFE_FUNCS.keys())
         tool = rng.choice(tools)
         tree = ast.parse(expr, mode='eval').body
         sub = _pick_node(rng, tree)
@@ -948,11 +985,18 @@ class Universe:
             elites = [g for g, _ in scored[:max(4, pop_size // 10)]]
             parenting_pool = [rng.choice(elites) for _ in range(pop_size - len(elites))]
 
-        children: List[Genome] = []
-        # Fallback pool for crossover partner
+        # [PHASE 3] Intelligent Guidance: Generate & Filter
+        candidates: List[Genome] = []
+        needed = pop_size - len(elites)
+        # Generate 2x candidates to allow surrogate to pick best
+        attempts_needed = needed * 2 
+        
         mate_pool = list(elites) + list(parenting_pool)
         
-        for parent in parenting_pool:
+        while len(candidates) < attempts_needed:
+            # Pick Parent
+            parent = rng.choice(parenting_pool) if parenting_pool else rng.choice(elites)
+            
             new_stmts = None
             op_tag = 'copy'
             
@@ -967,7 +1011,7 @@ class Universe:
             if not new_stmts:
                 new_stmts = parent.statements[:]
             
-            # Mutation (Standard + Lib for now, Policy pending)
+            # Mutation
             if op_tag == 'copy' and rng.random() < self.meta.mutation_rate:
                 use_synth = rng.random() < 0.3 and OPERATORS_LIB
                 if use_synth:
@@ -981,20 +1025,20 @@ class Universe:
                         new_stmts = OPERATORS[op](rng, new_stmts)
                     op_tag = f'mut:{op}'
 
-            # Skip library injection for LGP Phase 1
+            candidates.append(Genome(statements=new_stmts, parents=[parent.gid], op_tag=op_tag))
+
+        # Surrogate Selection
+        # Predict fitness for all candidates
+        with_pred = []
+        for c in candidates:
+            score_est = SURROGATE.predict(c.code)
+            with_pred.append((c, score_est))
             
-            if rng.random() < 0.4:
-                # Predict on code string
-                temp_g = Genome(statements=new_stmts)
-                pred = SURROGATE.predict(temp_g.code)
-                if pred > max(0.5, self.best_score * 10):
-                     # Prune
-                     new_stmts = parent.statements[:]
-                     op_tag += '|pruned'
-            
-            children.append(Genome(statements=new_stmts, parents=[parent.gid], op_tag=op_tag))
+        # Select top 'needed' by predicted score (ascending error)
+        with_pred.sort(key=lambda x: x[1])
+        selected_children = [c for c, _ in with_pred[:needed]]
         
-        self.pool = list(elites) + children
+        self.pool = list(elites) + selected_children
         if rng.random() < 0.02:
             maybe_evolve_operators_lib(rng)
 
