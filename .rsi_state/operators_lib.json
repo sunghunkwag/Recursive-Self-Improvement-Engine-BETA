@@ -1,10 +1,9 @@
 {
-  "synth_fbd9ecee": {
+  "synth_e37745d4": {
     "steps": [
-      "insert_while",
-      "delete_stmt",
-      "insert_assign",
-      "insert_if"
+      "list_manip",
+      "tweak_const",
+      "modify_line"
     ],
     "score": 0.0
   }

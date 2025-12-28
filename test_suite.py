@@ -151,6 +151,59 @@ def test_tdr_patching():
         os.remove(target)
         return False
 
+def test_meta_autopatch():
+    """Test 5: Meta-RSI Autopatch (Mocked)"""
+    print("\n" + "="*60)
+    print("TEST 5: Meta-RSI Autopatch (L0-L5)")
+    print("="*60)
+    
+    # 1. Mock Global State
+    from L2_UNIFIED_RSI import GlobalState, MetaState, Universe, FunctionLibrary, save_state, run_deep_autopatch
+    import L2_UNIFIED_RSI as rsi
+    
+    # Create a dummy state
+    meta = MetaState(mutation_rate=0.5)
+    uni = Universe(uid=1, seed=123, meta=meta, pool=[], library=FunctionLibrary())
+    uni.best_score = 10.0
+    gs = GlobalState('v1', 0, 0, 123, {'name':'test'}, [uni.snapshot()], 1, 10)
+    save_state(gs)
+    
+    # 2. Mock probe_run to simulate improvement
+    original_probe = rsi.probe_run
+    
+    def mock_probe(script, gens=0, pop=0):
+        # First call (baseline) -> 10.0
+        # Subsequent calls (patch) -> 9.0
+        if not hasattr(mock_probe, 'calls'): mock_probe.calls = 0
+        mock_probe.calls += 1
+        return 10.0 if mock_probe.calls == 1 else 9.0
+        
+    rsi.probe_run = mock_probe
+    
+    try:
+        # Run autopatch L0 (Hyperparams)
+        print("Running Autopatch L0 (Mocked)...")
+        result = run_deep_autopatch(levels=[0], candidates=2, apply=False)
+        
+        print(f"Result: {result}")
+        if result.get('improved') or result.get('best'):
+            print("✅ PASS: Autopatch found improvement (Mocked)")
+            return True
+        else:
+            if 'results' in result and result['results']:
+                 print("✅ PASS: Autopatch generated plans (even if not applied)")
+                 return True
+            print("❌ FAIL: No plans generated")
+            return False
+            
+    except Exception as e:
+        print(f"❌ FAIL: Autopatch error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        rsi.probe_run = original_probe
+
 def run_all_tests():
     """Run complete verification suite"""
     print("\n" + "█"*60)
@@ -161,7 +214,8 @@ def run_all_tests():
         ("EDA Grammar Learning", test_eda_grammar_learning),
         ("Algorithmic Tasks", test_algorithmic_tasks),
         ("ARC JSON Loading", test_arc_json_loading),
-        ("Test-Driven Repair", test_tdr_patching)
+        ("Test-Driven Repair", test_tdr_patching),
+        ("Meta-RSI Autopatch", test_meta_autopatch)
     ]
     
     results = []
