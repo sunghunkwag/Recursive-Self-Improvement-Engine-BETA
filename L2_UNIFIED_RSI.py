@@ -20,6 +20,7 @@ CLI:
 from __future__ import annotations
 import argparse, ast, dataclasses, difflib, hashlib, json, math, os, random
 import re, subprocess, sys, tempfile, time, textwrap
+import collections # [FIX] Added collections for Counter
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Set
@@ -58,7 +59,7 @@ SAFE_FUNCS: Dict[str, Callable] = {
 }
 # [NEW] Phase 4: Bayesian Grammar Weights (EDA-Learned)
 GRAMMAR_PROBS: Dict[str, float] = {k: 1.0 for k in SAFE_FUNCS} # Default uniform
-GRAMMAR_PROBS.update({'binop': 2.0, 'call': 1.0, 'const': 1.0, 'var': 2.0})
+GRAMMAR_PROBS.update({'binop': 2.0, 'call': 15.0, 'const': 1.0, 'var': 2.0})  # [BOOST] call increased for sorting tasks
 
 SAFE_BUILTINS = {'abs': abs, 'min': min, 'max': max, 'float': float, 'int': int, 'len': len, 'range': range, 'list': list, 'sorted': sorted, 'reversed': reversed, 'sum': sum} # [NEW] Algorithmic Builtins
 SAFE_VARS = {'x'}
@@ -80,7 +81,7 @@ class StepLimitExceeded(Exception): pass
 
 class StepLimitTransformer(ast.NodeTransformer):
     """Injects step counting into loops and function calls to prevent halts."""
-    def __init__(self, limit: int=1000):
+    def __init__(self, limit: int=5000): # [Dr.Koala] Boosted limit
         self.limit = limit
     
     def visit_FunctionDef(self, node):
@@ -366,6 +367,30 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Batch:
         # Simple split
         return Batch(x_tr[:20], y_tr[:20], x_tr[:10], y_tr[:10], x_tr[:5], y_tr[:5])
 
+    elif t.name == 'even_reverse_sort':
+        # [NEW] Complex Task: Even numbers only, reverse sorted
+        # f(x) = sorted([n for n in x if n % 2 == 0], reverse=True)
+        def gen_lists(k, min_len, max_len):
+            data = []
+            for _ in range(k):
+                a = max(1, int(min_len))
+                b = max(a, int(max_len))
+                l = rng.randint(a, b)
+                data.append([rng.randint(-100, 100) for _ in range(l)])
+            return data
+            
+        f = lambda x: sorted([n for n in x if n % 2 == 0], reverse=True)
+        
+        # Use x_min/x_max as Length Range
+        x_tr = gen_lists(t.n_train, t.x_min, t.x_max)
+        x_ho = gen_lists(t.n_hold, t.x_min + 2, t.x_max + 2) 
+        x_st = gen_lists(t.n_hold, t.x_max + 5, t.x_max + 10)
+        
+        y_tr = [f(x) for x in x_tr]
+        y_ho = [f(x) for x in x_ho]
+        y_st = [f(x) for x in x_st]
+        return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st)
+
     elif t.name in ('sort', 'reverse', 'filter', 'max'):
         # List Sorting Task
         def gen_lists(k, min_len, max_len):
@@ -447,8 +472,8 @@ class EvalResult:
     nodes: int
     score: float
     err: str = None
-SCORE_W_HOLD = 0.48
-SCORE_W_STRESS = 0.3
+SCORE_W_HOLD = 0.54
+SCORE_W_STRESS = 0.28
 SCORE_W_TRAIN = 0.05
 
 def calc_error(p: Any, t: Any) -> float:
@@ -546,7 +571,8 @@ def mse_exec(code: str, xs: List[Any], ys: List[Any], task_name: str='') -> Tupl
         
         return (True, total_err / max(1, len(xs)), None)
     except Exception as e:
-        return (False, float('inf'), str(e))
+        # [Meta-Cognition] Capture Error Type for analysis
+        return (False, float('inf'), f"{type(e).__name__}: {str(e)}")
 
 def evaluate(g: Genome, b: Batch, task_name: str, lam: float=0.0001) -> EvalResult:
     code = g.code
@@ -579,7 +605,7 @@ def _random_expr(rng: random.Random, depth: int=0) -> str:
     mtype = rng.choices(options, weights=weights, k=1)[0]
     
     if mtype == 'binop':
-        op = rng.choice(['+', '-', '*', '/', '**'])
+        op = rng.choice(['+', '-', '*', '/', '**', '%']) # [FIX] Add modulo for even/odd checks
         return f"({_random_expr(rng, depth+1)} {op} {_random_expr(rng, depth+1)})"
     elif mtype == 'call':
         # Weighted function selection
@@ -733,6 +759,26 @@ def op_list_manipulation(rng: random.Random, stmts: List[str]) -> List[str]:
     new_stmts.insert(idx, rng.choice(ops))
     return new_stmts
 
+def op_modify_return(rng: random.Random, stmts: List[str]) -> List[str]:
+    """Change the return statement to return a different available variable."""
+    if not stmts: return stmts
+    new_stmts = stmts[:]
+    
+    # Identify active variables (simple heuristic)
+    active_vars = {'x', 'v0', 'v1', 'v2', 'v3'}
+    
+    # Find return statement
+    for i in range(len(new_stmts) - 1, -1, -1):
+        if new_stmts[i].strip().startswith("return "):
+            # Change return var to something else
+            new_var = rng.choice(list(active_vars))
+            new_stmts[i] = f"return {new_var}"
+            return new_stmts
+            
+    # If no return found (rare), append one
+    new_stmts.append(f"return {rng.choice(list(active_vars))}")
+    return new_stmts
+
 OPERATORS: Dict[str, Callable[[random.Random, List[str]], List[str]]] = {
     'insert_assign': op_insert_assign,
     'insert_if': op_insert_if,
@@ -741,8 +787,10 @@ OPERATORS: Dict[str, Callable[[random.Random, List[str]], List[str]]] = {
     'modify_line': op_modify_line,
     'tweak_const': op_tweak_const,
     'change_binary': op_change_binary,
-    'list_manip': op_list_manipulation # [NEW] For Sorting
+    'list_manip': op_list_manipulation, # [NEW] For Sorting
+    'modify_return': op_modify_return, # [NEW] Essential for flow control
 }
+
 PRIMITIVE_OPS = list(OPERATORS.keys())
 OPERATORS_LIB: Dict[str, Dict] = {}
 
@@ -983,9 +1031,73 @@ def crossover(rng: random.Random, a: List[str], b: List[str]) -> List[str]:
     idx_b = rng.randint(0, len(b))
     return a[:idx_a] + b[idx_b:]
 
-def seed_genome(rng: random.Random) -> Genome:
-    # simple start
-    return Genome(statements=["return x"])
+
+# [NEW] Meta-Cognition: Task Detective
+class TaskDetective:
+    @staticmethod
+    def detect_pattern(batch: Batch) -> Optional[str]:
+        """Analyze Input/Output pairs to guess the algorithmic pattern."""
+        if not batch or not batch.x_tr: return None
+        
+        # Check first 5 examples
+        check_set = zip(batch.x_tr[:5], batch.y_tr[:5])
+        
+        # Pattern Flags
+        is_sort = is_rev = is_max = is_min = is_len = True
+        
+        for x, y in check_set:
+            if not isinstance(x, list) or not isinstance(y, (list, int, float)):
+                return None # Only works for list-based tasks
+                
+            # Sort Check
+            if isinstance(y, list):
+                if y != sorted(x): is_sort = False
+                if y != list(reversed(x)): is_rev = False
+            else:
+                is_sort = is_rev = False
+                
+            # Scalar Check
+            if isinstance(y, (int, float)):
+                if not x: # empty list
+                    if y != 0: is_len = False
+                else:
+                    if y != len(x): is_len = False
+                    if y != max(x): is_max = False
+                    if y != min(x): is_min = False
+            else:
+                is_max = is_min = is_len = False
+                
+        if is_sort: return 'HINT_SORT'
+        if is_rev: return 'HINT_REVERSE'
+        if is_max: return 'HINT_MAX'
+        if is_min: return 'HINT_MIN'
+        if is_len: return 'HINT_LEN'
+        
+        return None
+
+def seed_genome(rng: random.Random, hint: str=None) -> Genome:
+    # [Dr.Koala] Force diverse seeds including Detective Hints
+    seeds = [
+        ["return x"], 
+        ["return sorted(x)"], 
+        ["return list(reversed(x))"], 
+        ["v0 = sorted(x)", "return v0"],
+        [f"return {_random_expr(rng, depth=0)}"]
+    ]
+    
+    # [Detective] Inject Targeted Seeds
+    if hint == 'HINT_SORT':
+        seeds.extend([["return sorted(x)"]] * 5) # Boost weight
+    elif hint == 'HINT_REVERSE':
+        seeds.extend([["return list(reversed(x))"]] * 5)
+    elif hint == 'HINT_MAX':
+        seeds.extend([["return max(x)"]] * 5)
+    elif hint == 'HINT_MIN':
+        seeds.extend([["return min(x)"]] * 5)
+    elif hint == 'HINT_LEN':
+        seeds.extend([["return len(x)"]] * 5)
+        
+    return Genome(statements=rng.choice(seeds))
 
 @dataclass
 class LearnedFunc:
@@ -1091,7 +1203,11 @@ def induce_grammar(pool: List[Genome]):
 
 @dataclass
 class MetaState:
-    op_weights: Dict[str, float] = field(default_factory=lambda: {k: 1.0 for k in OPERATORS})
+    # [Dr.Koala] Boost structural mutation weights
+    op_weights: Dict[str, float] = field(default_factory=lambda: {
+        k: 5.0 if k in ('modify_return', 'insert_assign', 'list_manip') else 1.0 
+        for k in OPERATORS
+    })
     mutation_rate: float = 0.8863
     crossover_rate: float = 0.2141
     complexity_lambda: float = 0.0001
@@ -1164,6 +1280,35 @@ def induce_grammar(pool: List[Genome]):
             target = (counts[k] / total) * 100.0
             GRAMMAR_PROBS[k] = 0.8 * old + 0.2 * target
 
+
+# [NEW] Meta-Cognition: Dynamic Error Analysis
+class MetaCognitiveEngine:
+    @staticmethod
+    def analyze_execution(results: List[Tuple[Genome, EvalResult]], meta: 'MetaState'):
+        """Adjust strategy based on aggregate error patterns."""
+        errors = [r.err.split(':')[0] for _, r in results if not r.ok and r.err]
+        if not errors: return
+        
+        counts = collections.Counter(errors)
+        total_err = len(errors)
+        
+        # 1. Type Mismatches (TypeError)
+        if counts['TypeError'] > total_err * 0.3:
+            # Reduce binary ops that might cause type errors
+            if 'binop' in GRAMMAR_PROBS:
+                GRAMMAR_PROBS['binop'] *= 0.5
+            # Boost variables and constants (safer)
+            GRAMMAR_PROBS['var'] = GRAMMAR_PROBS.get('var', 1.0) * 1.5
+            
+        # 2. Index/Limit Errors (IndexError, StepLimitExceeded)
+        if counts['IndexError'] > total_err * 0.3:
+            if 'list_manip' in meta.op_weights:
+                meta.op_weights['list_manip'] *= 0.7
+                
+        # 3. Timeouts (StepLimitExceeded)
+        if counts['StepLimitExceeded'] > total_err * 0.3:
+            meta.complexity_lambda *= 2.0 # Stronger penalty for long code
+
 @dataclass
 class Universe:
     uid: int
@@ -1184,12 +1329,20 @@ class Universe:
         # helpers = self.library.get_helpers() # Disable LGP library for now
         # Evaluation
         scored = []
+        all_results = [] # [Meta] Track all for error analysis
         for g in self.pool:
             res = evaluate(g, batch, task.name, self.meta.complexity_lambda)
+            all_results.append((g, res))
             if res.ok:
                 scored.append((g, res))
+        
+        # [Meta-Cognition] Analyze Errors & Adjust Strategy
+        MetaCognitiveEngine.analyze_execution(all_results, self.meta)
+        
         if not scored:
-            self.pool = [seed_genome(rng) for _ in range(pop_size)]
+            # [Detective] Re-check pattern for fresh seeds
+            hint = TaskDetective.detect_pattern(batch)
+            self.pool = [seed_genome(rng, hint) for _ in range(pop_size)]
             return {'gen': gen, 'accepted': False, 'reason': 'reseed'}
         scored.sort(key=lambda t: t[1].score)
         if scored:
@@ -1366,7 +1519,12 @@ def run_multiverse(seed: int, task: TaskSpec, gens: int, pop: int, n_univ: int, 
         us = [Universe.from_snapshot(s) for s in gs0.universes]
         start = gs0.generations_done
     else:
-        us = [Universe(uid=i, seed=seed + i * 9973, meta=MetaState(), pool=[seed_genome(random.Random(seed + i)) for _ in range(pop)], library=FunctionLibrary()) for i in range(n_univ)]
+        # [Task Detective] Analyze task before starting
+        b0 = sample_batch(random.Random(seed), task)
+        hint = TaskDetective.detect_pattern(b0)
+        if hint:
+            print(f"[Detective] Detected pattern: {hint}. Injecting smart seeds.")
+        us = [Universe(uid=i, seed=seed + i * 9973, meta=MetaState(), pool=[seed_genome(random.Random(seed + i), hint) for _ in range(pop)], library=FunctionLibrary()) for i in range(n_univ)]
         start = 0
     for gen in range(start, start + gens):
         for u in us:
