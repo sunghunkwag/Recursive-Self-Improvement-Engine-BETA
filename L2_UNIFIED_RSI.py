@@ -1313,8 +1313,13 @@ class Universe:
 
     @staticmethod
     def from_snapshot(s: Dict) -> 'Universe':
-        meta = MetaState(**{k: v for k, v in s.get('meta', {}).items() if k != 'op_weights'})
-        meta.op_weights = s.get('meta', {}).get('op_weights', {k: 1.0 for k in OPERATORS})
+        meta_data = s.get('meta', {})
+        # Fix: Reconstruct EngineStrategy if it exists as a dict
+        if 'strategy' in meta_data and isinstance(meta_data['strategy'], dict):
+            meta_data['strategy'] = EngineStrategy(**meta_data['strategy'])
+        
+        meta = MetaState(**{k: v for k, v in meta_data.items() if k != 'op_weights'})
+        meta.op_weights = meta_data.get('op_weights', {k: 1.0 for k in OPERATORS})
         pool = [Genome(**g) for g in s.get('pool', [])]
         lib = FunctionLibrary.from_snapshot(s.get('library', {}))
         u = Universe(uid=s.get('uid', 0), seed=s.get('seed', 0), meta=meta, pool=pool, library=lib)
