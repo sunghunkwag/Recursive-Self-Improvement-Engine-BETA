@@ -179,7 +179,11 @@ def apply_patch_safe(target_file: str, new_content: str) -> bool:
     bak = target_file + ".bak"
     try:
         print(f"[TDR] Applying atomic patch to {target_file}...")
-        shutil.copy(target_file, bak)
+        
+        # Create backup if file exists
+        if os.path.exists(target_file):
+            shutil.copy(target_file, bak)
+            
         with open(target_file, 'w', encoding='utf-8') as f:
             f.write(new_content)
         
@@ -403,21 +407,6 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Batch:
         y_st = [f(x) for x in x_st]
         return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st)
 
-        return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st)
-
-    elif t.name in ARC_REAL_DATA:
-        # [NEW] Phase 5: Real ARC Data Loader
-        data = ARC_REAL_DATA[t.name]
-        # Flatten train/test
-        pairs = data['train'] + data['test']
-        # Repeat to fill batch
-        x_tr, y_tr = [], []
-        while len(x_tr) < 20:
-             for p in pairs:
-                 x_tr.append(p['in'])
-                 y_tr.append(p['out'])
-                 
-        return Batch(x_tr[:20], y_tr[:20], x_tr[:10], y_tr[:10], x_tr[:5], y_tr[:5])
 
     else:
         # Standard Regression
