@@ -308,22 +308,22 @@ TARGET_FNS = {
     'absline': lambda x: abs(x) + 0.2 * x
 }
 
-# [NEW] Phase 5: Real Kaggle ARC Data (Mock Subset for Verification)
-ARC_REAL_DATA = {
-    'arc_007bbfb7': { # Scaling Factor 3 (Simulated by 3x3 -> 9x9 repetition)
-        'train': [
-            ({'in': [[0,7],[7,0]], 'out': [[0,7,0,7,0,7],[7,0,7,0,7,0],[0,7,0,7,0,7],[7,0,7,0,7,0],[0,7,0,7,0,7],[7,0,7,0,7,0]]}), 
-        ],
-        'test': [] 
-    },
-    'arc_25d8a9c8': { # Inversion (Color Flip) - Real Task
-        'train': [
-             ({'in': [[0,5,0],[5,5,5],[0,5,0]], 'out': [[0,0,0],[0,0,0],[0,0,0]]}), # Mock data, just testing pipeline
-             ({'in': [[1,1],[1,1]], 'out': [[0,0],[0,0]]})
-        ],
-        'test': []
-    }
-}
+# [NEW] Phase 5: Real Kaggle ARC Data (File Loader)
+ARC_GYM_PATH = os.path.join(os.path.dirname(__file__), 'ARC_GYM')
+
+def load_arc_task(task_id: str) -> Dict:
+    """Load raw ARC JSON task."""
+    fname = task_id
+    if not fname.endswith('.json'): fname += '.json'
+    path = os.path.join(ARC_GYM_PATH, fname)
+    if not os.path.exists(path): return {}
+    with open(path, 'r') as f:
+        return json.load(f)
+
+def get_arc_tasks() -> List[str]:
+    """Scan ARC_GYM directory for available tasks."""
+    if not os.path.exists(ARC_GYM_PATH): return []
+    return [f[:-5] for f in os.listdir(ARC_GYM_PATH) if f.endswith('.json')]
 
 @dataclass
 class Batch:
@@ -345,17 +345,21 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Batch:
         f = TARGET_FNS.get(t.name, lambda x: x)
         
     
-    if t.name in ARC_REAL_DATA:
-        # [NEW] Phase 5: Real ARC Data Loader
-        data = ARC_REAL_DATA[t.name]
-        # Flatten train/test
-        pairs = data['train'] + data['test']
-        # Repeat to fill batch
+    # [NEW] Phase 5: Real ARC Data Loader (JSON)
+    json_data = load_arc_task(t.name.replace('arc_', '')) # Strip prefix if needed
+    if json_data:
+        # Flatten train/test. Kaggle JSON keys are 'input'/'output'
+        pairs = json_data.get('train', []) + json_data.get('test', [])
+        
         x_tr, y_tr = [], []
-        while len(x_tr) < 20:
+        # Repeat to fill batch
+        while len(x_tr) < 20 and pairs:
              for p in pairs:
-                 x_tr.append(p['in'])
-                 y_tr.append(p['out'])
+                 x_tr.append(p['input'])
+                 y_tr.append(p['output'])
+                 
+        if not x_tr: return None # Handle empty file
+        
         # Simple split
         return Batch(x_tr[:20], y_tr[:20], x_tr[:10], y_tr[:10], x_tr[:5], y_tr[:5])
 
@@ -921,24 +925,30 @@ class ProblemGenerator:
         
         
         # 1. Curriculum Selection
-        options = ['sort', 'reverse', 'max', 'filter', 'arc_ident', 'arc_inv', 'arc_rot90']
-        base_name = rng.choice(options)
+        arc_tasks = get_arc_tasks()  # Get available JSON files
+        base_options = ['sort', 'reverse', 'max', 'filter']
+        
+        # Prepend 'arc_' to JSON task IDs for consistency
+        arc_options = [f'arc_{tid}' for tid in arc_tasks] if arc_tasks else []
+        
+        options = base_options + arc_options
+        base_name = rng.choice(options) if options else 'sort'
         
         # 2. Difficulty Parameters
         level = rng.randint(1, 3)
         mn = 3 + level
         mx = 5 + level
         
-        # For ARC, x_min is dimension (3 to 6)
+        # For ARC, dimensions are handled by JSON data itself
         if base_name.startswith('arc_'):
-             mn, mx = 3, 5 # 3x3 to 5x5
+             mn, mx = 3, 5  # Placeholder dims
              
         new_task = TaskSpec(
             name=base_name,
             n_train=64,
             n_hold=32,
-            x_min=float(mn), # Min Length/Dim
-            x_max=float(mx), # Max Length/Dim
+            x_min=float(mn),
+            x_max=float(mx),
             noise=0.0
         )
         return new_task

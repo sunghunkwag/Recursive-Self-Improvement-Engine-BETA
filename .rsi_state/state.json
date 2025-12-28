@@ -1,8 +1,8 @@
 {
   "version": "RSI_EXT_v1",
-  "created_ms": 1766876783872,
-  "updated_ms": 1766876783872,
-  "base_seed": 74983,
+  "created_ms": 1766878079151,
+  "updated_ms": 1766878079152,
+  "base_seed": 78025,
   "task": {
     "name": "poly2",
     "x_min": -3.0,
@@ -15,7 +15,7 @@
   "universes": [
     {
       "uid": 0,
-      "seed": 74983,
+      "seed": 78025,
       "meta": {
         "op_weights": {
           "insert_assign": 1.0,
@@ -24,11 +24,11 @@
           "delete_stmt": 1.0,
           "modify_line": 1.0
         },
-        "mutation_rate": 0.95,
+        "mutation_rate": 0.8863,
         "crossover_rate": 0.2141,
         "complexity_lambda": 0.0001,
-        "epsilon_explore": 0.4,
-        "stuck_counter": 155,
+        "epsilon_explore": 0.12999999999999998,
+        "stuck_counter": 6,
         "strategy": {
           "selection_code": "\ndef run():\n    # Context injected: pool, scores, pop_size, rng, map_elites\n    # Returns: (elites, breeding_parents)\n    scored = sorted(zip(pool, scores), key=lambda x: x[1])\n    elite_k = max(4, pop_size // 10)\n    elites = [g for g, s in scored[:elite_k]]\n    \n    parents = []\n    n_needed = pop_size - len(elites)\n    for _ in range(n_needed):\n        # 10% chance to pick from MAP-Elites\n        if rng.random() < 0.1 and map_elites and map_elites.grid:\n             p = map_elites.sample(rng) or rng.choice(elites)\n        else:\n             p = rng.choice(elites)\n        parents.append(p)\n    return elites, parents\n",
           "crossover_code": "\ndef run():\n    # Context: p1 (stmts), p2 (stmts), rng\n    if len(p1) < 2 or len(p2) < 2: return p1\n    idx_a = rng.randint(0, len(p1))\n    idx_b = rng.randint(0, len(p2))\n    return p1[:idx_a] + p2[idx_b:]\n",
@@ -40,215 +40,221 @@
         "statements": [
           "return x"
         ],
-        "gid": "06ae6c82f144",
+        "gid": "399640e76c91",
         "parents": [],
         "op_tag": "init",
-        "birth_ms": 1766874983407
+        "birth_ms": 1766878025333
       },
-      "best_score": 130.32864014342334,
-      "best_hold": 14.018605629501517,
-      "best_stress": 410.2752509241547,
+      "best_score": 165.82446640629158,
+      "best_hold": 13.563211882780829,
+      "best_stress": 529.4387522679483,
       "pool": [
         {
           "statements": [
             "return x"
           ],
-          "gid": "06ae6c82f144",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983407
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "06ae6c82f144",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983407
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "06ae6c82f144",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983407
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "06ae6c82f144",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983407
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "06ae6c82f144",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983407
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "06ae6c82f144",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983407
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "4ba78771c873",
+          "gid": "0b6d0211c661",
           "parents": [
-            "06ae6c82f144"
+            "399640e76c91"
           ],
           "op_tag": "crossover",
-          "birth_ms": 1766876780942
-        },
-        {
-          "statements": [
-            "return x"
-          ],
-          "gid": "4ba78771c873",
-          "parents": [
-            "06ae6c82f144"
-          ],
-          "op_tag": "copy",
-          "birth_ms": 1766876780942
-        },
-        {
-          "statements": [
-            "v1 = (((0.86 + x) + (x - 3)) + x)"
-          ],
-          "gid": "9851be61c4fc",
-          "parents": [
-            "06ae6c82f144"
-          ],
-          "op_tag": "synth:synth_2931fe5e",
-          "birth_ms": 1766876780942
+          "birth_ms": 1766878076711
         },
         {
           "statements": [],
-          "gid": "c2898f7d18fb",
+          "gid": "333586f60fbc",
           "parents": [
-            "06ae6c82f144"
+            "399640e76c91"
           ],
-          "op_tag": "synth:evo_a04eadf5",
-          "birth_ms": 1766876780942
+          "op_tag": "mut:delete_stmt",
+          "birth_ms": 1766878076711
         },
         {
           "statements": [
-            "return x"
-          ],
-          "gid": "7a607a6c01ca",
-          "parents": [
-            "06ae6c82f144"
-          ],
-          "op_tag": "crossover",
-          "birth_ms": 1766876780944
-        },
-        {
-          "statements": [
-            "return x"
-          ],
-          "gid": "7a607a6c01ca",
-          "parents": [
-            "06ae6c82f144"
-          ],
-          "op_tag": "crossover",
-          "birth_ms": 1766876780944
-        },
-        {
-          "statements": [
-            "if v3 < 10:",
+            "if v3 < 5:",
             "    return x"
           ],
-          "gid": "479b0bf3086c",
+          "gid": "5d174c35579e",
           "parents": [
-            "06ae6c82f144"
+            "399640e76c91"
           ],
           "op_tag": "mut:insert_if",
-          "birth_ms": 1766876780944
+          "birth_ms": 1766878076711
         },
         {
           "statements": [
-            "while v2 < 3:",
+            "while v1 < 9:",
             "    return x"
           ],
-          "gid": "a9f938ebdb4d",
+          "gid": "61e937f747c7",
           "parents": [
-            "06ae6c82f144"
+            "399640e76c91"
           ],
           "op_tag": "mut:insert_while",
-          "birth_ms": 1766876780944
-        },
-        {
-          "statements": [],
-          "gid": "2747b2e28a23",
-          "parents": [
-            "06ae6c82f144"
-          ],
-          "op_tag": "mut:delete_stmt",
-          "birth_ms": 1766876780944
-        },
-        {
-          "statements": [
-            "while v3 < 6:",
-            "    return x"
-          ],
-          "gid": "84c38cbd655f",
-          "parents": [
-            "06ae6c82f144"
-          ],
-          "op_tag": "mut:insert_while",
-          "birth_ms": 1766876780944
+          "birth_ms": 1766878076711
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "ef30d5e20ebb",
+          "gid": "0b6d0211c661",
           "parents": [
-            "06ae6c82f144"
+            "399640e76c91"
+          ],
+          "op_tag": "copy",
+          "birth_ms": 1766878076711
+        },
+        {
+          "statements": [
+            "return x"
+          ],
+          "gid": "0b6d0211c661",
+          "parents": [
+            "399640e76c91"
           ],
           "op_tag": "crossover",
-          "birth_ms": 1766876780945
+          "birth_ms": 1766878076711
+        },
+        {
+          "statements": [
+            "return x",
+            "v1 = v0"
+          ],
+          "gid": "8295db78d02c",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "mut:insert_assign",
+          "birth_ms": 1766878076711
+        },
+        {
+          "statements": [
+            "return x"
+          ],
+          "gid": "0b6d0211c661",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "crossover",
+          "birth_ms": 1766878076711
+        },
+        {
+          "statements": [
+            "return x"
+          ],
+          "gid": "0b6d0211c661",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "copy",
+          "birth_ms": 1766878076711
+        },
+        {
+          "statements": [
+            "v3 = (((3 * 0.27) * 9) + (4 * (0.8 + 0.16)))",
+            "if v3 < 10:",
+            "    while v1 < 6:"
+          ],
+          "gid": "971dcde3b086",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "synth:synth_fbd9ecee",
+          "birth_ms": 1766878076711
         },
         {
           "statements": [],
-          "gid": "0760cafbe532",
+          "gid": "333586f60fbc",
           "parents": [
-            "06ae6c82f144"
+            "399640e76c91"
           ],
           "op_tag": "mut:delete_stmt",
-          "birth_ms": 1766876780945
+          "birth_ms": 1766878076711
+        },
+        {
+          "statements": [
+            "return x"
+          ],
+          "gid": "0b6d0211c661",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "mut:modify_line",
+          "birth_ms": 1766878076711
         },
         {
           "statements": [],
-          "gid": "0760cafbe532",
+          "gid": "333586f60fbc",
           "parents": [
-            "06ae6c82f144"
+            "399640e76c91"
           ],
           "op_tag": "mut:delete_stmt",
-          "birth_ms": 1766876780945
+          "birth_ms": 1766878076711
         },
         {
-          "statements": [],
-          "gid": "0760cafbe532",
-          "parents": [
-            "06ae6c82f144"
+          "statements": [
+            "return x"
           ],
-          "op_tag": "synth:evo_68afb991",
-          "birth_ms": 1766876780945
+          "gid": "f35815a4326e",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "crossover",
+          "birth_ms": 1766878076712
         }
       ],
       "library": {
@@ -256,410 +262,90 @@
       },
       "history": [
         {
-          "gen": 225,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
+          "gen": 0,
+          "accepted": true,
+          "score": 205.80329734488734,
+          "hold": 16.687877212288896,
+          "stress": 657.8938058061283,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 226,
+          "gen": 1,
           "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
+          "score": 205.80329734488734,
+          "hold": 16.687877212288896,
+          "stress": 657.8938058061283,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 227,
+          "gen": 2,
           "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
+          "score": 205.80329734488734,
+          "hold": 16.687877212288896,
+          "stress": 657.8938058061283,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 228,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
+          "gen": 3,
+          "accepted": true,
+          "score": 165.82446640629158,
+          "hold": 13.563211882780829,
+          "stress": 529.4387522679483,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 229,
+          "gen": 4,
           "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
+          "score": 165.82446640629158,
+          "hold": 13.563211882780829,
+          "stress": 529.4387522679483,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 230,
+          "gen": 5,
           "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
+          "score": 165.82446640629158,
+          "hold": 13.563211882780829,
+          "stress": 529.4387522679483,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 231,
+          "gen": 6,
           "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
+          "score": 165.82446640629158,
+          "hold": 13.563211882780829,
+          "stress": 529.4387522679483,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 232,
+          "gen": 7,
           "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
+          "score": 165.82446640629158,
+          "hold": 13.563211882780829,
+          "stress": 529.4387522679483,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 233,
+          "gen": 8,
           "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
+          "score": 165.82446640629158,
+          "hold": 13.563211882780829,
+          "stress": 529.4387522679483,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 234,
+          "gen": 9,
           "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 235,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 236,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 237,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 238,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 239,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 240,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 241,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 242,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 243,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 244,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 245,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 246,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 247,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 248,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 249,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 250,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 251,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 252,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 253,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 254,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 255,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 256,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 257,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 258,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 259,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 260,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 261,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 262,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 263,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 264,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 265,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 266,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 267,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 268,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 269,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 270,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 271,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 272,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 273,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 274,
-          "accepted": false,
-          "score": 130.32864014342334,
-          "hold": 14.018605629501517,
-          "stress": 410.2752509241547,
-          "code": "def run(x):\n    # 06ae6c82f144\n    _steps=0\n    v0=x\n    return x"
+          "score": 165.82446640629158,
+          "hold": 13.563211882780829,
+          "stress": 529.4387522679483,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         }
       ]
     },
     {
       "uid": 1,
-      "seed": 84956,
+      "seed": 87998,
       "meta": {
         "op_weights": {
           "insert_assign": 1.0,
@@ -668,11 +354,11 @@
           "delete_stmt": 1.0,
           "modify_line": 1.0
         },
-        "mutation_rate": 0.95,
+        "mutation_rate": 0.8863,
         "crossover_rate": 0.2141,
         "complexity_lambda": 0.0001,
-        "epsilon_explore": 0.4,
-        "stuck_counter": 90,
+        "epsilon_explore": 0.11999999999999998,
+        "stuck_counter": 0,
         "strategy": {
           "selection_code": "\ndef run():\n    # Context injected: pool, scores, pop_size, rng, map_elites\n    # Returns: (elites, breeding_parents)\n    scored = sorted(zip(pool, scores), key=lambda x: x[1])\n    elite_k = max(4, pop_size // 10)\n    elites = [g for g, s in scored[:elite_k]]\n    \n    parents = []\n    n_needed = pop_size - len(elites)\n    for _ in range(n_needed):\n        # 10% chance to pick from MAP-Elites\n        if rng.random() < 0.1 and map_elites and map_elites.grid:\n             p = map_elites.sample(rng) or rng.choice(elites)\n        else:\n             p = rng.choice(elites)\n        parents.append(p)\n    return elites, parents\n",
           "crossover_code": "\ndef run():\n    # Context: p1 (stmts), p2 (stmts), rng\n    if len(p1) < 2 or len(p2) < 2: return p1\n    idx_a = rng.randint(0, len(p1))\n    idx_b = rng.randint(0, len(p2))\n    return p1[:idx_a] + p2[idx_b:]\n",
@@ -684,222 +370,225 @@
         "statements": [
           "return x"
         ],
-        "gid": "8f8e9e886ad4",
+        "gid": "399640e76c91",
         "parents": [],
         "op_tag": "init",
-        "birth_ms": 1766874983408
+        "birth_ms": 1766878025333
       },
-      "best_score": 136.53343672964132,
-      "best_hold": 14.084832712230769,
-      "best_stress": 430.5197545248064,
+      "best_score": 173.91529930038752,
+      "best_hold": 16.035011964648966,
+      "best_stress": 552.0252618952394,
       "pool": [
         {
           "statements": [
             "return x"
           ],
-          "gid": "8f8e9e886ad4",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983408
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "8f8e9e886ad4",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983408
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "8f8e9e886ad4",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983408
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "8f8e9e886ad4",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983408
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "8f8e9e886ad4",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983408
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "8f8e9e886ad4",
+          "gid": "399640e76c91",
           "parents": [],
           "op_tag": "init",
-          "birth_ms": 1766874983408
+          "birth_ms": 1766878025333
         },
         {
           "statements": [
-            "return x",
-            "v1 = ((8 + (x * 0.85)) - ((2 - 3) * v0))"
-          ],
-          "gid": "c3349764119a",
-          "parents": [
-            "8f8e9e886ad4"
-          ],
-          "op_tag": "mut:insert_assign",
-          "birth_ms": 1766876783868
-        },
-        {
-          "statements": [
-            "while v3 < 9:",
+            "while v3 < 3:",
             "    return x"
           ],
-          "gid": "aaec22931a7a",
+          "gid": "65d0881006b4",
           "parents": [
-            "8f8e9e886ad4"
+            "399640e76c91"
           ],
           "op_tag": "mut:insert_while",
-          "birth_ms": 1766876783868
+          "birth_ms": 1766878079146
         },
         {
           "statements": [
-            "if v2 < 1:",
+            "while v3 < 3:",
             "    return x"
           ],
-          "gid": "1523d26114fe",
+          "gid": "65d0881006b4",
           "parents": [
-            "8f8e9e886ad4"
+            "399640e76c91"
           ],
-          "op_tag": "mut:insert_if",
-          "birth_ms": 1766876783868
+          "op_tag": "mut:insert_while",
+          "birth_ms": 1766878079146
         },
         {
           "statements": [],
-          "gid": "f3f4106aa644",
+          "gid": "26c2be7e13d8",
           "parents": [
-            "8f8e9e886ad4"
+            "399640e76c91"
           ],
           "op_tag": "mut:delete_stmt",
-          "birth_ms": 1766876783868
+          "birth_ms": 1766878079146
         },
         {
           "statements": [
             "return x"
           ],
-          "gid": "bc0914234232",
+          "gid": "f0d5e19e67b8",
           "parents": [
-            "8f8e9e886ad4"
-          ],
-          "op_tag": "crossover",
-          "birth_ms": 1766876783868
-        },
-        {
-          "statements": [],
-          "gid": "f3f4106aa644",
-          "parents": [
-            "8f8e9e886ad4"
-          ],
-          "op_tag": "synth:synth_ba229992",
-          "birth_ms": 1766876783868
-        },
-        {
-          "statements": [
-            "return x"
-          ],
-          "gid": "3a00a7005fd2",
-          "parents": [
-            "8f8e9e886ad4"
-          ],
-          "op_tag": "crossover",
-          "birth_ms": 1766876783870
-        },
-        {
-          "statements": [
-            "v1 = (((0.5 - v0) + (9 + v0)) + x)",
-            "return x"
-          ],
-          "gid": "91c8d8ccc081",
-          "parents": [
-            "8f8e9e886ad4"
-          ],
-          "op_tag": "mut:insert_assign",
-          "birth_ms": 1766876783870
-        },
-        {
-          "statements": [
-            "return x",
-            "v2 = (((x + v0) + (x + 9)) + (0.23 * (x * x)))"
-          ],
-          "gid": "595914c81e6e",
-          "parents": [
-            "8f8e9e886ad4"
-          ],
-          "op_tag": "mut:insert_assign",
-          "birth_ms": 1766876783870
-        },
-        {
-          "statements": [],
-          "gid": "936216a22f49",
-          "parents": [
-            "8f8e9e886ad4"
-          ],
-          "op_tag": "mut:delete_stmt",
-          "birth_ms": 1766876783870
-        },
-        {
-          "statements": [
-            "return x"
-          ],
-          "gid": "3a00a7005fd2",
-          "parents": [
-            "8f8e9e886ad4"
+            "399640e76c91"
           ],
           "op_tag": "mut:modify_line",
-          "birth_ms": 1766876783870
+          "birth_ms": 1766878079146
         },
         {
-          "statements": [
-            "v3 = (((x - v0) + (v0 * x)) * 5)"
-          ],
-          "gid": "917861262145",
+          "statements": [],
+          "gid": "26c2be7e13d8",
           "parents": [
-            "8f8e9e886ad4"
+            "399640e76c91"
           ],
-          "op_tag": "synth:synth_2931fe5e",
-          "birth_ms": 1766876783870
+          "op_tag": "mut:delete_stmt",
+          "birth_ms": 1766878079146
         },
         {
           "statements": [
-            "v1 = (((x - 3) - (5 * 0)) + ((v0 + v0) - (0.55 * x)))"
-          ],
-          "gid": "7cb8cf3fa8cd",
-          "parents": [
-            "8f8e9e886ad4"
-          ],
-          "op_tag": "synth:synth_2931fe5e",
-          "birth_ms": 1766876783870
-        },
-        {
-          "statements": [
-            "v1 = v0",
             "return x"
           ],
-          "gid": "68896883b3d3",
+          "gid": "f0d5e19e67b8",
           "parents": [
-            "8f8e9e886ad4"
+            "399640e76c91"
           ],
-          "op_tag": "mut:insert_assign",
-          "birth_ms": 1766876783870
+          "op_tag": "crossover",
+          "birth_ms": 1766878079146
+        },
+        {
+          "statements": [
+            "v3 = 0.49",
+            "if v3 < 7:",
+            "    while v1 < 7:"
+          ],
+          "gid": "91ee031e937f",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "synth:synth_fbd9ecee",
+          "birth_ms": 1766878079146
+        },
+        {
+          "statements": [],
+          "gid": "26c2be7e13d8",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "mut:delete_stmt",
+          "birth_ms": 1766878079146
+        },
+        {
+          "statements": [
+            "if v1 < 7:",
+            "    while v2 < 3:",
+            "    v1 = v0"
+          ],
+          "gid": "b0858aac8b12",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "synth:synth_fbd9ecee",
+          "birth_ms": 1766878079146
+        },
+        {
+          "statements": [
+            "if v1 < 2:",
+            "    return x"
+          ],
+          "gid": "61bf3c2516f7",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "mut:insert_if",
+          "birth_ms": 1766878079146
+        },
+        {
+          "statements": [
+            "return x"
+          ],
+          "gid": "f0d5e19e67b8",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "crossover",
+          "birth_ms": 1766878079146
+        },
+        {
+          "statements": [
+            "return x"
+          ],
+          "gid": "f0d5e19e67b8",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "crossover",
+          "birth_ms": 1766878079146
+        },
+        {
+          "statements": [
+            "v1 = (x - ((0.85 + 1) + (0.94 - x)))",
+            "if v1 < 4:",
+            "    while v2 < 9:"
+          ],
+          "gid": "c0dee7ce7d4c",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "synth:synth_fbd9ecee",
+          "birth_ms": 1766878079146
+        },
+        {
+          "statements": [
+            "return x"
+          ],
+          "gid": "f0d5e19e67b8",
+          "parents": [
+            "399640e76c91"
+          ],
+          "op_tag": "crossover",
+          "birth_ms": 1766878079146
         }
       ],
       "library": {
@@ -907,408 +596,88 @@
       },
       "history": [
         {
-          "gen": 225,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
+          "gen": 0,
+          "accepted": true,
+          "score": 200.44384739458897,
+          "hold": 11.037145340520915,
+          "stress": 648.8154463684479,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 226,
+          "gen": 1,
           "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
+          "score": 200.44384739458897,
+          "hold": 11.037145340520915,
+          "stress": 648.8154463684479,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 227,
+          "gen": 2,
           "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
+          "score": 200.44384739458897,
+          "hold": 11.037145340520915,
+          "stress": 648.8154463684479,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 228,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
+          "gen": 3,
+          "accepted": true,
+          "score": 178.7062591514807,
+          "hold": 8.52879578208774,
+          "stress": 579.6989286065046,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 229,
+          "gen": 4,
           "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
+          "score": 178.7062591514807,
+          "hold": 8.52879578208774,
+          "stress": 579.6989286065046,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 230,
+          "gen": 5,
           "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
+          "score": 178.7062591514807,
+          "hold": 8.52879578208774,
+          "stress": 579.6989286065046,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 231,
+          "gen": 6,
           "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
+          "score": 178.7062591514807,
+          "hold": 8.52879578208774,
+          "stress": 579.6989286065046,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 232,
+          "gen": 7,
           "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
+          "score": 178.7062591514807,
+          "hold": 8.52879578208774,
+          "stress": 579.6989286065046,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 233,
+          "gen": 8,
           "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
+          "score": 178.7062591514807,
+          "hold": 8.52879578208774,
+          "stress": 579.6989286065046,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         },
         {
-          "gen": 234,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 235,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 236,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 237,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 238,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 239,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 240,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 241,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 242,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 243,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 244,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 245,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 246,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 247,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 248,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 249,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 250,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 251,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 252,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 253,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 254,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 255,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 256,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 257,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 258,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 259,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 260,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 261,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 262,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 263,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 264,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 265,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 266,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 267,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 268,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 269,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 270,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 271,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 272,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 273,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
-        },
-        {
-          "gen": 274,
-          "accepted": false,
-          "score": 136.53343672964132,
-          "hold": 14.084832712230769,
-          "stress": 430.5197545248064,
-          "code": "def run(x):\n    # 8f8e9e886ad4\n    _steps=0\n    v0=x\n    return x"
+          "gen": 9,
+          "accepted": true,
+          "score": 173.91529930038752,
+          "hold": 16.035011964648966,
+          "stress": 552.0252618952394,
+          "code": "def run(x):\n    # 399640e76c91\n    _steps=0\n    v0=x\n    return x"
         }
       ]
     }
   ],
   "selected_uid": 0,
-  "generations_done": 275
+  "generations_done": 10
 }
