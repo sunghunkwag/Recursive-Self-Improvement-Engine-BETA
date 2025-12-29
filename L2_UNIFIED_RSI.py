@@ -1,29 +1,48 @@
-"""UNIFIED_RSI_EXTENDED.py
+""" 
+UNIFIED_RSI_EXTENDED_FIXED.py
 
-True RSI (Recursive Self-Improvement) Engine - BETA
-====================================================
-⚠️ BETA TESTING - Features under active development
+True RSI (Recursive Self-Improvement) Engine - BETA (Fixed/Executable)
+======================================================================
+
 RSI Levels:
 - L0: Hyperparameter tuning
-- L1: Operator weight adaptation  
-- L2: Add/remove mutation operators
-- L3: Modify evaluation function
-- L4: Synthesize new operators
-- L5: Modify self-modification logic
+- L1: Operator weight adaptation (source-patchable via OP_WEIGHT_INIT)
+- L2: Add/remove mutation operators (runtime library evolution)
+- L3: Modify evaluation function weights
+- L4: Persist learned operators into source (optional; markers supported)
+- L5: Modify self-modification logic (simple source edits)
 
 CLI:
-  python UNIFIED_RSI_EXTENDED.py selftest
-  python UNIFIED_RSI_EXTENDED.py evolve --fresh --generations 100
-  python UNIFIED_RSI_EXTENDED.py autopatch --levels 0,1,2,3 --apply
-  python UNIFIED_RSI_EXTENDED.py rsi-loop --generations 50 --rounds 10
+  python UNIFIED_RSI_EXTENDED_FIXED.py selftest
+  python UNIFIED_RSI_EXTENDED_FIXED.py evolve --fresh --generations 100
+  python UNIFIED_RSI_EXTENDED_FIXED.py autopatch --levels 0,1,3 --apply
+  python UNIFIED_RSI_EXTENDED_FIXED.py rsi-loop --generations 50 --rounds 10
 """
 from __future__ import annotations
-import argparse, ast, dataclasses, difflib, hashlib, json, math, os, random
-import re, subprocess, sys, tempfile, time, textwrap
+
+import argparse
+import ast
 import collections
+import dataclasses
+import difflib
+import hashlib
+import json
+import math
+import os
+import random
+import re
+import subprocess
+import sys
+import tempfile
+import time
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Set
+
+
+# ---------------------------
+# Utilities
+# ---------------------------
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -39,22 +58,76 @@ def safe_mkdir(p: Path):
 
 def read_json(p: Path) -> Dict:
     try:
-        return json.loads(p.read_text(encoding='utf-8'))
-    except:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
         return {}
 
-def write_json(p: Path, obj: Any, indent: int=2):
+def write_json(p: Path, obj: Any, indent: int = 2):
     safe_mkdir(p.parent)
-    p.write_text(json.dumps(obj, ensure_ascii=False, indent=indent, default=str), encoding='utf-8')
+    p.write_text(json.dumps(obj, ensure_ascii=False, indent=indent, default=str), encoding="utf-8")
 
 def unified_diff(old: str, new: str, name: str) -> str:
-    return ''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), fromfile=name, tofile=name))
-SAFE_FUNCS: Dict[str, Callable] = {'sin': math.sin, 'cos': math.cos, 'tan': math.tan, 'exp': math.exp, 'tanh': math.tanh, 'abs': abs, 'sqrt': lambda x: math.sqrt(abs(x) + 1e-12), 'log': lambda x: math.log(abs(x) + 1e-12), 'pow2': lambda x: x * x, 'sigmoid': lambda x: 1.0 / (1.0 + math.exp(-clamp(x, -500, 500))), 'gamma': lambda x: math.gamma(abs(x) + 1e-09) if abs(x) < 170 else float('inf'), 'erf': math.erf, 'ceil': math.ceil, 'floor': math.floor, 'sign': lambda x: math.copysign(1.0, x), 'sorted': sorted, 'reversed': reversed, 'max': max, 'min': min, 'sum': sum, 'len': len, 'list': list}
-GRAMMAR_PROBS: Dict[str, float] = {k: 1.0 for k in SAFE_FUNCS}
-GRAMMAR_PROBS.update({'binop': 2.0, 'call': 15.0, 'const': 1.0, 'var': 2.0})
-SAFE_BUILTINS = {'abs': abs, 'min': min, 'max': max, 'float': float, 'int': int, 'len': len, 'range': range, 'list': list, 'sorted': sorted, 'reversed': reversed, 'sum': sum}
-SAFE_VARS = {'x'}
+    return "".join(
+        difflib.unified_diff(
+            old.splitlines(True),
+            new.splitlines(True),
+            fromfile=name,
+            tofile=name,
+        )
+    )
 
+
+# ---------------------------
+# Safe primitives
+# ---------------------------
+
+SAFE_FUNCS: Dict[str, Callable] = {
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "exp": math.exp,
+    "tanh": math.tanh,
+    "abs": abs,
+    "sqrt": lambda x: math.sqrt(abs(x) + 1e-12),
+    "log": lambda x: math.log(abs(x) + 1e-12),
+    "pow2": lambda x: x * x,
+    "sigmoid": lambda x: 1.0 / (1.0 + math.exp(-clamp(x, -500, 500))),
+    "gamma": lambda x: math.gamma(abs(x) + 1e-09) if abs(x) < 170 else float("inf"),
+    "erf": math.erf,
+    "ceil": math.ceil,
+    "floor": math.floor,
+    "sign": lambda x: math.copysign(1.0, x),
+    # list helpers
+    "sorted": sorted,
+    "reversed": reversed,
+    "max": max,
+    "min": min,
+    "sum": sum,
+    "len": len,
+    "list": list,
+}
+
+GRAMMAR_PROBS: Dict[str, float] = {k: 1.0 for k in SAFE_FUNCS}
+GRAMMAR_PROBS.update({"binop": 2.0, "call": 15.0, "const": 1.0, "var": 2.0})
+
+SAFE_BUILTINS = {
+    "abs": abs,
+    "min": min,
+    "max": max,
+    "float": float,
+    "int": int,
+    "len": len,
+    "range": range,
+    "list": list,
+    "sorted": sorted,
+    "reversed": reversed,
+    "sum": sum,
+}
+
+SAFE_VARS = {"x", "v0", "v1", "v2", "v3"}
+
+
+# grid helpers (ARC-like)
 def _g_rot90(g):
     return [list(r) for r in zip(*g[::-1])]
 
@@ -66,63 +139,110 @@ def _g_inv(g):
 
 def _g_get(g, r, c):
     return g[r % len(g)][c % len(g[0])] if g and g[0] else 0
-SAFE_FUNCS.update({'rot90': _g_rot90, 'flip': _g_flip, 'inv': _g_inv, 'get': _g_get})
-for k in ['rot90', 'flip', 'inv', 'get']:
+
+SAFE_FUNCS.update({"rot90": _g_rot90, "flip": _g_flip, "inv": _g_inv, "get": _g_get})
+for k in ["rot90", "flip", "inv", "get"]:
     GRAMMAR_PROBS[k] = 1.0
+
+
+# ---------------------------
+# Safety: step limit + validators
+# ---------------------------
 
 class StepLimitExceeded(Exception):
     pass
 
 class StepLimitTransformer(ast.NodeTransformer):
-    """Injects step counting into loops and function calls to prevent halts."""
+    """Inject step counting into loops and function bodies to prevent non-termination."""
 
-    def __init__(self, limit: int=5000):
+    def __init__(self, limit: int = 5000):
         self.limit = limit
 
     def visit_FunctionDef(self, node):
-        check = ast.parse(f'if _steps > {self.limit}: raise StepLimitExceeded()').body[0]
-        inc = ast.parse('_steps += 1').body[0]
-        glob = ast.Global(names=['_steps'])
-        node.body.insert(0, inc)
-        node.body.insert(1, check)
+        glob = ast.Global(names=["_steps"])
+        inc = ast.parse("_steps += 1").body[0]
+        check = ast.parse(f"if _steps > {self.limit}: raise StepLimitExceeded()").body[0]
         node.body.insert(0, glob)
+        node.body.insert(1, inc)
+        node.body.insert(2, check)
         self.generic_visit(node)
         return node
 
     def visit_While(self, node):
-        check = ast.parse(f'if _steps > {self.limit}: raise StepLimitExceeded()').body[0]
-        inc = ast.parse('_steps += 1').body[0]
+        inc = ast.parse("_steps += 1").body[0]
+        check = ast.parse(f"if _steps > {self.limit}: raise StepLimitExceeded()").body[0]
         node.body.insert(0, inc)
         node.body.insert(1, check)
         self.generic_visit(node)
         return node
 
     def visit_For(self, node):
-        check = ast.parse(f'if _steps > {self.limit}: raise StepLimitExceeded()').body[0]
-        inc = ast.parse('_steps += 1').body[0]
+        inc = ast.parse("_steps += 1").body[0]
+        check = ast.parse(f"if _steps > {self.limit}: raise StepLimitExceeded()").body[0]
         node.body.insert(0, inc)
         node.body.insert(1, check)
         self.generic_visit(node)
         return node
 
+
 class CodeValidator(ast.NodeVisitor):
-    """Allow full python subset: assign, flow control, but no unsafe imports."""
-    ALLOWED = (ast.Module, ast.FunctionDef, ast.arguments, ast.arg, ast.Return, ast.Assign, ast.AugAssign, ast.Name, ast.Constant, ast.Expr, ast.If, ast.While, ast.For, ast.Break, ast.Continue, ast.BinOp, ast.UnaryOp, ast.Compare, ast.Call, ast.List, ast.Subscript, ast.Index, ast.Load, ast.Store, ast.IfExp, ast.operator, ast.boolop, ast.unaryop, ast.cmpop)
+    """
+    Allow a safe subset of Python: assignments, flow control, simple expressions, calls to safe names.
+    Forbid imports, attribute access, comprehensions, lambdas, etc.
+    """
+
+    _allowed = [
+        ast.Module,
+        ast.FunctionDef,
+        ast.arguments,
+        ast.arg,
+        ast.Return,
+        ast.Assign,
+        ast.AugAssign,
+        ast.Name,
+        ast.Constant,
+        ast.Expr,
+        ast.If,
+        ast.While,
+        ast.For,
+        ast.Break,
+        ast.Continue,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Compare,
+        ast.Call,
+        ast.List,
+        ast.Tuple,  # critical for tuple-assign (swap)
+        ast.Subscript,
+        ast.Load,
+        ast.Store,
+        ast.IfExp,
+        ast.operator,
+        ast.boolop,
+        ast.unaryop,
+        ast.cmpop,
+    ]
+    if hasattr(ast, "Index"):
+        _allowed.append(ast.Index)
+
+    ALLOWED = tuple(_allowed)
 
     def __init__(self):
         self.ok, self.err = (True, None)
 
     def visit(self, node):
         if not isinstance(node, self.ALLOWED):
-            self.ok, self.err = (False, f'Forbidden: {type(node).__name__}')
+            self.ok, self.err = (False, f"Forbidden: {type(node).__name__}")
             return
         if isinstance(node, ast.Name):
-            if node.id.startswith('__') or node.id in ('open', 'eval', 'exec', 'compile'):
-                self.ok, self.err = (False, f'Forbidden name: {node.id}')
+            if node.id.startswith("__") or node.id in ("open", "eval", "exec", "compile", "__import__"):
+                self.ok, self.err = (False, f"Forbidden name: {node.id}")
                 return
-        super().generic_visit(node)
-
-    def generic_visit(self, node):
+        if isinstance(node, ast.Call):
+            # forbid attribute calls (e.g., os.system)
+            if not isinstance(node.func, ast.Name):
+                self.ok, self.err = (False, "Forbidden call form (non-Name callee)")
+                return
         super().generic_visit(node)
 
 def validate_code(code: str) -> Tuple[bool, str]:
@@ -130,88 +250,197 @@ def validate_code(code: str) -> Tuple[bool, str]:
         tree = ast.parse(code)
         v = CodeValidator()
         v.visit(tree)
-        return (v.ok, v.err)
+        return (v.ok, v.err or "")
     except Exception as e:
         return (False, str(e))
 
+
+class ExprValidator(ast.NodeVisitor):
+    """Validate a single expression (mode='eval') allowing only safe names and safe call forms."""
+    ALLOWED = (
+        ast.Expression,
+        ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.IfExp,
+        ast.Call,
+        ast.Name, ast.Load,
+        ast.Constant,
+        ast.operator, ast.unaryop, ast.boolop, ast.cmpop,
+    )
+
+    def __init__(self, allowed_names: Set[str]):
+        self.allowed_names = allowed_names
+        self.ok = True
+        self.err: Optional[str] = None
+
+    def visit(self, node):
+        if not isinstance(node, self.ALLOWED):
+            self.ok, self.err = (False, f"Forbidden expr node: {type(node).__name__}")
+            return
+        if isinstance(node, ast.Name):
+            if node.id.startswith("__") or node.id in ("open", "eval", "exec", "compile", "__import__"):
+                self.ok, self.err = (False, f"Forbidden name: {node.id}")
+                return
+            if node.id not in self.allowed_names:
+                self.ok, self.err = (False, f"Unknown name: {node.id}")
+                return
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name):
+                self.ok, self.err = (False, "Forbidden call form (non-Name callee)")
+                return
+        super().generic_visit(node)
+
+def validate_expr(expr: str, extra: Optional[Set[str]] = None) -> Tuple[bool, str]:
+    try:
+        extra = extra or set()
+        allowed = (
+            set(SAFE_FUNCS.keys())
+            | set(SAFE_BUILTINS.keys())
+            | set(SAFE_VARS)
+            | set(extra)
+        )
+        tree = ast.parse(expr, mode="eval")
+        v = ExprValidator(allowed)
+        v.visit(tree)
+        return (v.ok, v.err or "")
+    except Exception as e:
+        return (False, str(e))
+
+def safe_eval(expr: str, x: Any, extra_env: Optional[Dict[str, Any]] = None, extra_names: Optional[Set[str]] = None) -> Any:
+    ok, _ = validate_expr(expr, extra=extra_names)
+    if not ok:
+        return float("nan")
+    try:
+        env: Dict[str, Any] = {}
+        env.update(SAFE_FUNCS)
+        env.update(SAFE_BUILTINS)
+        env["x"] = x
+        env["v0"] = x
+        env["v1"] = x
+        env["v2"] = x
+        env["v3"] = x
+        if extra_env:
+            env.update(extra_env)
+        return eval(compile(ast.parse(expr, mode="eval"), "<expr>", "eval"), {"__builtins__": {}}, env)
+    except Exception:
+        return float("nan")
+
+
 def node_count(code: str) -> int:
     try:
-        return sum((1 for _ in ast.walk(ast.parse(code))))
-    except:
+        return sum(1 for _ in ast.walk(ast.parse(code)))
+    except Exception:
         return 999
 
-def safe_exec(code: str, x: float, timeout_steps: int=1000) -> float:
-    """Execute code with step limit. Code must define 'run(x)'."""
+
+def safe_exec(code: str, x: Any, timeout_steps: int = 1000, extra_env: Optional[Dict[str, Any]] = None) -> Any:
+    """Execute candidate code with step limit. Code must define run(x). Returns Any (float/list/grid)."""
     try:
         tree = ast.parse(code)
         transformer = StepLimitTransformer(timeout_steps)
         tree = transformer.visit(tree)
         ast.fix_missing_locations(tree)
-        env = {'_steps': 0, 'StepLimitExceeded': StepLimitExceeded, **SAFE_FUNCS, **SAFE_BUILTINS}
-        exec(compile(tree, '<lgp>', 'exec'), env)
-        if 'run' not in env:
-            return float('nan')
-        res = env['run'](x)
-        return res
+
+        env: Dict[str, Any] = {"_steps": 0, "StepLimitExceeded": StepLimitExceeded}
+        env.update(SAFE_FUNCS)
+        env.update(SAFE_BUILTINS)
+        if extra_env:
+            env.update(extra_env)
+
+        exec(compile(tree, "<lgp>", "exec"), env)
+        if "run" not in env:
+            return float("nan")
+        return env["run"](x)
     except StepLimitExceeded:
-        return float('nan')
+        return float("nan")
     except Exception:
-        return float('nan')
+        return float("nan")
 
-def apply_patch_safe(target_file: str, new_content: str) -> bool:
-    """[NEW] Phase 5: Test-Driven Repair (TDR) - Atomic Patching"""
-    import shutil
-    bak = target_file + '.bak'
-    try:
-        print(f'[TDR] Applying atomic patch to {target_file}...')
-        if os.path.exists(target_file):
-            shutil.copy(target_file, bak)
-        with open(target_file, 'w', encoding='utf-8') as f:
-            f.write(new_content)
-        try:
-            ast.parse(new_content)
-        except SyntaxError as e:
-            raise ValueError(f'Syntax Error: {e}')
-        if target_file.endswith('.py'):
-            cmd = f'''python -c "import sys; sys.path.append('.'); import {os.path.basename(target_file)[:-3]} as m; print(m.__name__)"'''
-            ret = os.system(cmd)
-            if ret != 0:
-                raise RuntimeError('Import Verification Failed')
-        print('[TDR] Patch Verified. Commit.')
-        return True
-    except Exception as e:
-        print(f'[TDR] Patch Validation Failed: {e}. Rolling back.')
-        shutil.move(bak, target_file)
-        return False
 
-def safe_exec_engine(code: str, context: Dict[str, Any], timeout_steps: int=5000) -> Any:
+def safe_exec_engine(code: str, context: Dict[str, Any], timeout_steps: int = 5000) -> Any:
     """Execute meta-engine code (selection/crossover) with safety limits."""
     try:
         tree = ast.parse(str(code))
         transformer = StepLimitTransformer(timeout_steps)
         tree = transformer.visit(tree)
         ast.fix_missing_locations(tree)
-        env = {'_steps': 0, 'StepLimitExceeded': StepLimitExceeded, 'random': random, 'math': math, 'max': max, 'min': min, 'len': len, 'sum': sum, 'sorted': sorted, 'int': int, 'float': float, 'list': list, **context}
-        exec(compile(tree, '<engine>', 'exec'), env)
-        if 'run' in env:
-            return env['run']()
+
+        env: Dict[str, Any] = {"_steps": 0, "StepLimitExceeded": StepLimitExceeded}
+        env.update({
+            "random": random,
+            "math": math,
+            "max": max,
+            "min": min,
+            "len": len,
+            "sum": sum,
+            "sorted": sorted,
+            "int": int,
+            "float": float,
+            "list": list,
+        })
+        env.update(context)
+
+        exec(compile(tree, "<engine>", "exec"), env)
+        if "run" in env:
+            return env["run"]()
         return None
-    except Exception as e:
+    except Exception:
         return None
+
+
+# ---------------------------
+# Engine strategy (meta-evolvable selection/crossover policy)
+# ---------------------------
 
 @dataclass
 class EngineStrategy:
     selection_code: str
     crossover_code: str
     mutation_policy_code: str
-    gid: str = 'default'
-DEFAULT_SELECTION_CODE = '\ndef run():\n    # Context injected: pool, scores, pop_size, rng, map_elites\n    # Returns: (elites, breeding_parents)\n    scored = sorted(zip(pool, scores), key=lambda x: x[1])\n    elite_k = max(4, pop_size // 10)\n    elites = [g for g, s in scored[:elite_k]]\n    \n    parents = []\n    n_needed = pop_size - len(elites)\n    for _ in range(n_needed):\n        # 10% chance to pick from MAP-Elites\n        if rng.random() < 0.1 and map_elites and map_elites.grid:\n             p = map_elites.sample(rng) or rng.choice(elites)\n        else:\n             p = rng.choice(elites)\n        parents.append(p)\n    return elites, parents\n'
-DEFAULT_CROSSOVER_CODE = '\ndef run():\n    # Context: p1 (stmts), p2 (stmts), rng\n    if len(p1) < 2 or len(p2) < 2: return p1\n    idx_a = rng.randint(0, len(p1))\n    idx_b = rng.randint(0, len(p2))\n    return p1[:idx_a] + p2[idx_b:]\n'
-DEFAULT_MUTATION_CODE = "\ndef run():\n    # Placeholder for mutation policy\n    return 'default'\n"
+    gid: str = "default"
+
+
+DEFAULT_SELECTION_CODE = """
+def run():
+    # Context injected: pool, scores, pop_size, rng, map_elites
+    # Returns: (elites, breeding_parents)
+    scored = sorted(zip(pool, scores), key=lambda x: x[1])
+    elite_k = max(4, pop_size // 10)
+    elites = [g for g, s in scored[:elite_k]]
+
+    parents = []
+    n_needed = pop_size - len(elites)
+    for _ in range(n_needed):
+        # 10% chance to pick from MAP-Elites
+        if rng.random() < 0.1 and map_elites and map_elites.grid:
+            p = map_elites.sample(rng) or rng.choice(elites)
+        else:
+            p = rng.choice(elites)
+        parents.append(p)
+    return elites, parents
+"""
+
+DEFAULT_CROSSOVER_CODE = """
+def run():
+    # Context: p1 (stmts), p2 (stmts), rng
+    if len(p1) < 2 or len(p2) < 2:
+        return p1
+    idx_a = rng.randint(0, len(p1))
+    idx_b = rng.randint(0, len(p2))
+    return p1[:idx_a] + p2[idx_b:]
+"""
+
+DEFAULT_MUTATION_CODE = """
+def run():
+    return "default"
+"""
+
+
+# ---------------------------
+# Tasks / Datasets
+# ---------------------------
 
 @dataclass
 class TaskSpec:
-    name: str = 'poly2'
+    name: str = "poly2"
     x_min: float = -3.0
     x_max: float = 3.0
     n_train: int = 96
@@ -219,25 +448,39 @@ class TaskSpec:
     noise: float = 0.01
     stress_mult: float = 3.0
     target_code: Optional[str] = None
-TARGET_FNS = {'sort': lambda x: sorted(x), 'reverse': lambda x: list(reversed(x)), 'max': lambda x: max(x) if x else 0, 'filter': lambda x: [v for v in x if v > 0], 'arc_ident': lambda x: x, 'arc_rot90': lambda x: [list(r) for r in zip(*x[::-1])], 'arc_inv': lambda x: [[1 - c if c in (0, 1) else c for c in r] for r in x], 'poly2': lambda x: 0.7 * x * x - 0.2 * x + 0.3, 'poly3': lambda x: 0.3 * x ** 3 - 0.5 * x + 0.1, 'sinmix': lambda x: math.sin(x) + 0.3 * math.cos(2 * x), 'absline': lambda x: abs(x) + 0.2 * x}
-ARC_GYM_PATH = os.path.join(os.path.dirname(__file__), 'ARC_GYM')
+
+
+TARGET_FNS = {
+    "sort": lambda x: sorted(x),
+    "reverse": lambda x: list(reversed(x)),
+    "max": lambda x: max(x) if x else 0,
+    "filter": lambda x: [v for v in x if v > 0],
+    "arc_ident": lambda x: x,
+    "arc_rot90": lambda x: [list(r) for r in zip(*x[::-1])],
+    "arc_inv": lambda x: [[1 - c if c in (0, 1) else c for c in r] for r in x],
+    "poly2": lambda x: 0.7 * x * x - 0.2 * x + 0.3,
+    "poly3": lambda x: 0.3 * x ** 3 - 0.5 * x + 0.1,
+    "sinmix": lambda x: math.sin(x) + 0.3 * math.cos(2 * x),
+    "absline": lambda x: abs(x) + 0.2 * x,
+}
+
+
+ARC_GYM_PATH = os.path.join(os.path.dirname(__file__), "ARC_GYM")
 
 def load_arc_task(task_id: str) -> Dict:
-    """Load raw ARC JSON task."""
     fname = task_id
-    if not fname.endswith('.json'):
-        fname += '.json'
+    if not fname.endswith(".json"):
+        fname += ".json"
     path = os.path.join(ARC_GYM_PATH, fname)
     if not os.path.exists(path):
         return {}
-    with open(path, 'r') as f:
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 def get_arc_tasks() -> List[str]:
-    """Scan ARC_GYM directory for available tasks."""
     if not os.path.exists(ARC_GYM_PATH):
         return []
-    return [f[:-5] for f in os.listdir(ARC_GYM_PATH) if f.endswith('.json')]
+    return [f[:-5] for f in os.listdir(ARC_GYM_PATH) if f.endswith(".json")]
 
 @dataclass
 class Batch:
@@ -248,36 +491,44 @@ class Batch:
     x_st: List[Any]
     y_st: List[Any]
 
-def sample_batch(rng: random.Random, t: TaskSpec) -> Batch:
+def sample_batch(rng: random.Random, t: TaskSpec) -> Optional[Batch]:
+    # function target
     if t.target_code:
         f = lambda x: safe_exec(t.target_code, x)
-    elif t.name in ('sort', 'reverse', 'filter', 'max'):
-        f = TARGET_FNS.get(t.name)
-        if not f:
-            f = lambda x: sorted(x)
+    elif t.name in ("sort", "reverse", "filter", "max"):
+        f = TARGET_FNS.get(t.name) or (lambda x: sorted(x))
     else:
         f = TARGET_FNS.get(t.name, lambda x: x)
-    json_data = load_arc_task(t.name.replace('arc_', ''))
-    if json_data:
-        pairs = json_data.get('train', []) + json_data.get('test', [])
-        x_tr, y_tr = ([], [])
-        while len(x_tr) < 20 and pairs:
-            for p in pairs:
-                x_tr.append(p['input'])
-                y_tr.append(p['output'])
-        if not x_tr:
-            return None
-        return Batch(x_tr[:20], y_tr[:20], x_tr[:10], y_tr[:10], x_tr[:5], y_tr[:5])
-    elif t.name == 'even_reverse_sort':
 
-        def gen_lists(k, min_len, max_len):
-            data = []
-            for _ in range(k):
-                a = max(1, int(min_len))
-                b = max(a, int(max_len))
-                l = rng.randint(a, b)
-                data.append([rng.randint(-100, 100) for _ in range(l)])
-            return data
+    # ARC tasks from local json
+    json_data = load_arc_task(t.name.replace("arc_", ""))
+    if json_data:
+        pairs = json_data.get("train", []) + json_data.get("test", [])
+        x_all, y_all = [], []
+        for p in pairs:
+            x_all.append(p["input"])
+            y_all.append(p["output"])
+            if len(x_all) >= 30:
+                break
+        if not x_all:
+            return None
+        return Batch(
+            x_all[:20], y_all[:20],
+            x_all[:10], y_all[:10],
+            x_all[:5],  y_all[:5],
+        )
+
+    # list tasks
+    def gen_lists(k, min_len, max_len):
+        data = []
+        for _ in range(k):
+            a = max(1, int(min_len))
+            b = max(a, int(max_len))
+            l = rng.randint(a, b)
+            data.append([rng.randint(-100, 100) for _ in range(l)])
+        return data
+
+    if t.name == "even_reverse_sort":
         f = lambda x: sorted([n for n in x if n % 2 == 0], reverse=True)
         x_tr = gen_lists(t.n_train, t.x_min, t.x_max)
         x_ho = gen_lists(t.n_hold, t.x_min + 2, t.x_max + 2)
@@ -286,16 +537,8 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Batch:
         y_ho = [f(x) for x in x_ho]
         y_st = [f(x) for x in x_st]
         return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st)
-    elif t.name in ('sort', 'reverse', 'filter', 'max'):
 
-        def gen_lists(k, min_len, max_len):
-            data = []
-            for _ in range(k):
-                a = max(1, int(min_len))
-                b = max(a, int(max_len))
-                l = rng.randint(a, b)
-                data.append([rng.randint(-100, 100) for _ in range(l)])
-            return data
+    if t.name in ("sort", "reverse", "filter", "max"):
         x_tr = gen_lists(t.n_train, t.x_min, t.x_max)
         x_ho = gen_lists(t.n_hold, t.x_min + 2, t.x_max + 2)
         x_st = gen_lists(t.n_hold, t.x_max + 5, t.x_max + 10)
@@ -303,8 +546,9 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Batch:
         y_ho = [f(x) for x in x_ho]
         y_st = [f(x) for x in x_st]
         return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st)
-    elif t.name.startswith('arc_'):
 
+    # synthetic ARC-like generators if name starts with arc_
+    if t.name.startswith("arc_"):
         def gen_grids(k, dim):
             data = []
             for _ in range(k):
@@ -319,31 +563,38 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Batch:
         y_ho = [f(x) for x in x_ho]
         y_st = [f(x) for x in x_st]
         return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st)
-    else:
-        xs = lambda n, a, b: [a + (b - a) * rng.random() for _ in range(n)]
-        ys = lambda xv, n: [f(x) + rng.gauss(0, n) if n > 0 else f(x) for x in xv]
-        half = 0.5 * (t.x_max - t.x_min)
-        mid = 0.5 * (t.x_min + t.x_max)
-        x_tr, x_ho = (xs(t.n_train, t.x_min, t.x_max), xs(t.n_hold, t.x_min, t.x_max))
-        x_st = xs(t.n_hold, mid - half * t.stress_mult, mid + half * t.stress_mult)
-        return Batch(x_tr, ys(x_tr, t.noise), x_ho, ys(x_ho, t.noise), x_st, ys(x_st, t.noise * t.stress_mult))
+
+    # numeric regression tasks
+    xs = lambda n, a, b: [a + (b - a) * rng.random() for _ in range(n)]
+    ys = lambda xv, n: [f(x) + rng.gauss(0, n) if n > 0 else f(x) for x in xv]
+    half = 0.5 * (t.x_max - t.x_min)
+    mid = 0.5 * (t.x_min + t.x_max)
+    x_tr = xs(t.n_train, t.x_min, t.x_max)
+    x_ho = xs(t.n_hold, t.x_min, t.x_max)
+    x_st = xs(t.n_hold, mid - half * t.stress_mult, mid + half * t.stress_mult)
+    return Batch(x_tr, ys(x_tr, t.noise), x_ho, ys(x_ho, t.noise), x_st, ys(x_st, t.noise * t.stress_mult))
+
+
+# ---------------------------
+# Genome / Evaluation
+# ---------------------------
 
 @dataclass
 class Genome:
     statements: List[str]
-    gid: str = ''
+    gid: str = ""
     parents: List[str] = field(default_factory=list)
-    op_tag: str = 'init'
+    op_tag: str = "init"
     birth_ms: int = 0
 
     @property
     def code(self) -> str:
-        body = '\n    '.join(self.statements) if self.statements else 'return x'
-        return f'def run(x):\n    # {self.gid}\n    _steps=0\n    v0=x\n    {body}'
+        body = "\n    ".join(self.statements) if self.statements else "return x"
+        return f"def run(x):\n    # {self.gid}\n    _steps=0\n    v0=x\n    {body}"
 
     def __post_init__(self):
         if not self.gid:
-            self.gid = sha256(''.join(self.statements) + str(time.time()))[:12]
+            self.gid = sha256("".join(self.statements) + str(time.time()))[:12]
         if not self.birth_ms:
             self.birth_ms = now_ms()
 
@@ -355,34 +606,36 @@ class EvalResult:
     stress: float
     nodes: int
     score: float
-    err: str = None
+    err: Optional[str] = None
+
+
 SCORE_W_HOLD = 0.49
 SCORE_W_STRESS = 0.28
 SCORE_W_TRAIN = 0.05
 
+
 def calc_error(p: Any, t: Any) -> float:
-    """Recursively calculate squared error between prediction and target."""
     if isinstance(t, (int, float)):
         if isinstance(p, (int, float)):
             return (p - t) ** 2
-        return 1000000.0
-    elif isinstance(t, list):
+        return 1_000_000.0
+    if isinstance(t, list):
         if not isinstance(p, list):
-            return 1000000.0
+            return 1_000_000.0
         if len(p) != len(t):
             return 1000.0 * abs(len(p) - len(t))
-        return sum((calc_error(pv, tv) for pv, tv in zip(p, t)))
-    return 1000000.0
+        return sum(calc_error(pv, tv) for pv, tv in zip(p, t))
+    return 1_000_000.0
+
 
 def calc_loss_sort(p: List[Any], t: List[Any]) -> float:
-    """Advanced Fitness for Sorting: Inversions + Element Matching."""
     if not isinstance(p, list):
-        return 1000000.0
+        return 1_000_000.0
     if len(p) != len(t):
         return 1000.0 * abs(len(p) - len(t))
-    p_sorted = sorted(p) if all((isinstance(x, (int, float)) for x in p)) else p
+    p_sorted = sorted(p) if all(isinstance(x, (int, float)) for x in p) else p
     t_sorted = sorted(t)
-    content_loss = sum(((a - b) ** 2 for a, b in zip(p_sorted, t_sorted)))
+    content_loss = sum((a - b) ** 2 for a, b in zip(p_sorted, t_sorted))
     if content_loss > 0.1:
         return 1000.0 + content_loss
     inversions = 0
@@ -392,21 +645,19 @@ def calc_loss_sort(p: List[Any], t: List[Any]) -> float:
                 inversions += 1
     return float(inversions)
 
+
 def calc_heuristic_loss(p: Any, t: Any, task_name: str) -> float:
-    """Specialized Fitness functions for Hard Benchmarks."""
-    if task_name == 'sort':
+    if task_name == "sort":
         return calc_loss_sort(p, t)
     if isinstance(t, list):
         if not isinstance(p, list):
-            return 1000000.0
+            return 1_000_000.0
         if len(p) != len(t):
             return 500.0 * abs(len(p) - len(t))
-        if task_name == 'reverse':
-            return sum((calc_error(pv, tv) for pv, tv in zip(p, t)))
-        if task_name == 'filter':
-            return sum((calc_error(pv, tv) for pv, tv in zip(p, t)))
-    if task_name.startswith('arc_'):
-        if not isinstance(p, list) or not p or (not isinstance(p[0], list)):
+        if task_name in ("reverse", "filter"):
+            return sum(calc_error(pv, tv) for pv, tv in zip(p, t))
+    if task_name.startswith("arc_"):
+        if not isinstance(p, list) or not p or not isinstance(p[0], list):
             return 1000.0
         if len(p) != len(t) or len(p[0]) != len(t[0]):
             return 500.0 + abs(len(p) - len(t)) + abs(len(p[0]) - len(t[0]))
@@ -418,33 +669,41 @@ def calc_heuristic_loss(p: Any, t: Any, task_name: str) -> float:
         return float(err)
     return calc_error(p, t)
 
-def mse_exec(code: str, xs: List[Any], ys: List[Any], task_name: str='') -> Tuple[bool, float, str]:
+
+def mse_exec(code: str, xs: List[Any], ys: List[Any], task_name: str = "", extra_env: Optional[Dict[str, Any]] = None) -> Tuple[bool, float, str]:
     ok, err = validate_code(code)
     if not ok:
-        return (False, float('inf'), err)
+        return (False, float("inf"), err)
     try:
         total_err = 0.0
         for x, y in zip(xs, ys):
-            pred = safe_exec(code, x)
+            pred = safe_exec(code, x, extra_env=extra_env)
             if pred is None:
-                return (False, float('inf'), 'No return')
-            if task_name in ('sort', 'reverse', 'max', 'filter') or task_name.startswith('arc_'):
+                return (False, float("inf"), "No return")
+            if task_name in ("sort", "reverse", "max", "filter") or task_name.startswith("arc_"):
                 total_err += calc_heuristic_loss(pred, y, task_name)
             else:
                 total_err += calc_error(pred, y)
-        return (True, total_err / max(1, len(xs)), None)
+        return (True, total_err / max(1, len(xs)), "")
     except Exception as e:
-        return (False, float('inf'), f'{type(e).__name__}: {str(e)}')
+        return (False, float("inf"), f"{type(e).__name__}: {str(e)}")
 
-def evaluate(g: Genome, b: Batch, task_name: str, lam: float=0.0001) -> EvalResult:
+
+def evaluate(g: Genome, b: Batch, task_name: str, lam: float = 0.0001, extra_env: Optional[Dict[str, Any]] = None) -> EvalResult:
     code = g.code
-    ok1, tr, e1 = mse_exec(code, b.x_tr, b.y_tr, task_name)
-    ok2, ho, e2 = mse_exec(code, b.x_ho, b.y_ho, task_name)
-    ok3, st, e3 = mse_exec(code, b.x_st, b.y_st, task_name)
-    ok = ok1 and ok2 and ok3 and all((math.isfinite(v) for v in [tr, ho, st]))
+    ok1, tr, e1 = mse_exec(code, b.x_tr, b.y_tr, task_name, extra_env=extra_env)
+    ok2, ho, e2 = mse_exec(code, b.x_ho, b.y_ho, task_name, extra_env=extra_env)
+    ok3, st, e3 = mse_exec(code, b.x_st, b.y_st, task_name, extra_env=extra_env)
+    ok = ok1 and ok2 and ok3 and all(math.isfinite(v) for v in (tr, ho, st))
     nodes = node_count(code)
     score = SCORE_W_HOLD * ho + SCORE_W_STRESS * st + SCORE_W_TRAIN * tr + lam * nodes
-    return EvalResult(ok, tr, ho, st, nodes, score, e1 or e2 or e3)
+    err = e1 or e2 or e3
+    return EvalResult(ok, tr, ho, st, nodes, score, err or None)
+
+
+# ---------------------------
+# Mutation operators
+# ---------------------------
 
 def _pick_node(rng: random.Random, body: ast.AST) -> ast.AST:
     nodes = list(ast.walk(body))
@@ -453,34 +712,34 @@ def _pick_node(rng: random.Random, body: ast.AST) -> ast.AST:
 def _to_src(body: ast.AST) -> str:
     try:
         return ast.unparse(body)
-    except:
-        return 'x'
+    except Exception:
+        return "x"
 
-def _random_expr(rng: random.Random, depth: int=0) -> str:
+def _random_expr(rng: random.Random, depth: int = 0) -> str:
     if depth > 2:
-        return rng.choice(['x', 'v0', str(rng.randint(0, 9))])
-    options = ['binop', 'call', 'const', 'var']
+        return rng.choice(["x", "v0", str(rng.randint(0, 9))])
+    options = ["binop", "call", "const", "var"]
     weights = [GRAMMAR_PROBS.get(k, 1.0) for k in options]
     mtype = rng.choices(options, weights=weights, k=1)[0]
-    if mtype == 'binop':
-        op = rng.choice(['+', '-', '*', '/', '**', '%'])
-        return f'({_random_expr(rng, depth + 1)} {op} {_random_expr(rng, depth + 1)})'
-    elif mtype == 'call':
+    if mtype == "binop":
+        op = rng.choice(["+", "-", "*", "/", "**", "%"])
+        return f"({_random_expr(rng, depth + 1)} {op} {_random_expr(rng, depth + 1)})"
+    if mtype == "call":
         funcs = list(SAFE_FUNCS.keys())
         f_weights = [GRAMMAR_PROBS.get(f, 0.5) for f in funcs]
         fname = rng.choices(funcs, weights=f_weights, k=1)[0]
-        return f'{fname}({_random_expr(rng, depth + 1)})'
-    elif mtype == 'const':
-        return f'{rng.uniform(-2, 2):.2f}'
-    else:
-        return rng.choice(['x', 'v0'])
+        return f"{fname}({_random_expr(rng, depth + 1)})"
+    if mtype == "const":
+        return f"{rng.uniform(-2, 2):.2f}"
+    return rng.choice(["x", "v0"])
+
 
 def op_insert_assign(rng: random.Random, stmts: List[str]) -> List[str]:
     new_stmts = stmts[:]
     idx = rng.randint(0, len(new_stmts))
-    var = f'v{rng.randint(0, 3)}'
+    var = f"v{rng.randint(0, 3)}"
     expr = _random_expr(rng)
-    new_stmts.insert(idx, f'{var} = {expr}')
+    new_stmts.insert(idx, f"{var} = {expr}")
     return new_stmts
 
 def op_insert_if(rng: random.Random, stmts: List[str]) -> List[str]:
@@ -488,9 +747,9 @@ def op_insert_if(rng: random.Random, stmts: List[str]) -> List[str]:
         return stmts
     new_stmts = stmts[:]
     idx = rng.randint(0, len(new_stmts) - 1)
-    cond = f'v{rng.randint(0, 3)} < {rng.randint(0, 10)}'
-    block = [f'    {s}' for s in new_stmts[idx:idx + 2]]
-    new_stmts[idx:idx + 2] = [f'if {cond}:'] + block
+    cond = f"v{rng.randint(0, 3)} < {rng.randint(0, 10)}"
+    block = [f"    {s}" for s in new_stmts[idx: idx + 2]]
+    new_stmts[idx: idx + 2] = [f"if {cond}:"] + block
     return new_stmts
 
 def op_insert_while(rng: random.Random, stmts: List[str]) -> List[str]:
@@ -498,9 +757,9 @@ def op_insert_while(rng: random.Random, stmts: List[str]) -> List[str]:
         return stmts
     new_stmts = stmts[:]
     idx = rng.randint(0, len(new_stmts) - 1)
-    cond = f'v{rng.randint(0, 3)} < {rng.randint(0, 10)}'
-    block = [f'    {s}' for s in new_stmts[idx:idx + 2]]
-    new_stmts[idx:idx + 2] = [f'while {cond}:'] + block
+    cond = f"v{rng.randint(0, 3)} < {rng.randint(0, 10)}"
+    block = [f"    {s}" for s in new_stmts[idx: idx + 2]]
+    new_stmts[idx: idx + 2] = [f"while {cond}:"] + block
     return new_stmts
 
 def op_delete_stmt(rng: random.Random, stmts: List[str]) -> List[str]:
@@ -515,127 +774,105 @@ def op_modify_line(rng: random.Random, stmts: List[str]) -> List[str]:
         return stmts
     new_stmts = stmts[:]
     idx = rng.randint(0, len(new_stmts) - 1)
-    if '=' in new_stmts[idx]:
-        var = new_stmts[idx].split('=')[0].strip()
-        new_stmts[idx] = f'{var} = {_random_expr(rng)}'
+    if "=" in new_stmts[idx]:
+        var = new_stmts[idx].split("=")[0].strip()
+        new_stmts[idx] = f"{var} = {_random_expr(rng)}"
     return new_stmts
 
-def op_shrink(rng: random.Random, expr: str) -> str:
-    try:
-        tree = ast.parse(expr, mode='eval').body
-        prims = [ast.Name(id='x', ctx=ast.Load()), ast.Constant(0.0), ast.Constant(1.0)]
-        return _to_src(rng.choice(prims))
-    except:
-        return expr
-
-def op_grow(rng: random.Random, expr: str) -> str:
-    try:
-        tree = ast.parse(expr, mode='eval').body
-        new_term = rng.choice([ast.BinOp(left=tree, op=ast.Add(), right=ast.Constant(rng.gauss(0, 1))), ast.BinOp(left=tree, op=ast.Mult(), right=ast.Name(id='x', ctx=ast.Load()))])
-        new = _to_src(new_term)
-        ok, _ = validate_expr(new)
-        return new if ok else expr
-    except:
-        return expr
-
-def op_graft_library(rng: random.Random, expr: str) -> str:
-    """Graft a library function (Gamma, Erf, etc.) into the expression."""
-    try:
-        tools = list(SAFE_FUNCS.keys())
-        tool = rng.choice(tools)
-        tree = ast.parse(expr, mode='eval').body
-        sub = _pick_node(rng, tree)
-        call = ast.Call(func=ast.Name(id=tool, ctx=ast.Load()), args=[sub], keywords=[])
-        new = _to_src(call)
-        ok, _ = validate_expr(new)
-        return new if ok else expr
-    except:
-        return expr
-
 def op_tweak_const(rng: random.Random, stmts: List[str]) -> List[str]:
-    """Micro-mutation: Tweak numerical constants."""
     if not stmts:
         return stmts
     new_stmts = stmts[:]
     idx = rng.randint(0, len(new_stmts) - 1)
 
-    def _tweak_node(node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            val = node.value
-            if isinstance(val, bool):
-                return node
-            new_val = val + rng.gauss(0, 0.1 * abs(val) + 0.01)
-            if rng.random() < 0.05:
-                new_val = -val
-            if rng.random() < 0.05:
-                new_val = 0
-            return ast.Constant(value=new_val)
-        return node
-
     class TweakTransformer(ast.NodeTransformer):
-
         def visit_Constant(self, node):
-            return _tweak_node(node)
+            if isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+                val = float(node.value)
+                new_val = val + rng.gauss(0, 0.1 * abs(val) + 0.01)
+                if rng.random() < 0.05:
+                    new_val = -val
+                if rng.random() < 0.05:
+                    new_val = 0.0
+                return ast.Constant(value=new_val)
+            return node
+
     try:
-        tree = ast.parse(new_stmts[idx], mode='exec')
+        tree = ast.parse(new_stmts[idx], mode="exec")
         new_tree = TweakTransformer().visit(tree)
-        new_stmts[idx] = _to_src(new_tree)
-    except:
+        ast.fix_missing_locations(new_tree)
+        new_stmts[idx] = ast.unparse(new_tree).strip()
+    except Exception:
         pass
     return new_stmts
 
 def op_change_binary(rng: random.Random, stmts: List[str]) -> List[str]:
-    """Swap binary operators (+, -, *, /)."""
     if not stmts:
         return stmts
     new_stmts = stmts[:]
     idx = rng.randint(0, len(new_stmts) - 1)
-    pops = [ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow]
+    pops = [ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod]
 
     class OpTransformer(ast.NodeTransformer):
-
         def visit_BinOp(self, node):
+            node = self.generic_visit(node)
             if rng.random() < 0.5:
-                new_op = rng.choice(pops)()
-                return ast.BinOp(left=node.left, op=new_op, right=node.right)
+                node.op = rng.choice(pops)()
             return node
+
     try:
-        tree = ast.parse(new_stmts[idx], mode='exec')
+        tree = ast.parse(new_stmts[idx], mode="exec")
         new_tree = OpTransformer().visit(tree)
-        new_stmts[idx] = _to_src(new_tree)
-    except:
+        ast.fix_missing_locations(new_tree)
+        new_stmts[idx] = ast.unparse(new_tree).strip()
+    except Exception:
         pass
     return new_stmts
 
 def op_list_manipulation(rng: random.Random, stmts: List[str]) -> List[str]:
-    """Insert list operations (swaps, access)."""
     if not stmts:
         return stmts
     new_stmts = stmts[:]
     idx = rng.randint(0, len(new_stmts))
-    ops = [f'v{rng.randint(0, 3)} = x[{rng.randint(0, 2)}]', f'if len(x) > {rng.randint(1, 5)}: v{rng.randint(0, 3)} = x[0]', 'v0, v1 = v1, v0', f'v{rng.randint(0, 3)} = sorted(x)']
+    ops = [
+        f"v{rng.randint(0,3)} = x[{rng.randint(0,2)}]",
+        f"if len(x) > {rng.randint(1,5)}: v{rng.randint(0,3)} = x[0]",
+        "v0, v1 = v1, v0",  # requires Tuple allowed
+        f"v{rng.randint(0,3)} = sorted(x)",
+    ]
     new_stmts.insert(idx, rng.choice(ops))
     return new_stmts
 
 def op_modify_return(rng: random.Random, stmts: List[str]) -> List[str]:
-    """Change the return statement to return a different available variable."""
-    if not stmts:
-        return stmts
     new_stmts = stmts[:]
-    active_vars = {'x', 'v0', 'v1', 'v2', 'v3'}
+    active_vars = ["x", "v0", "v1", "v2", "v3"]
     for i in range(len(new_stmts) - 1, -1, -1):
-        if new_stmts[i].strip().startswith('return '):
-            new_var = rng.choice(list(active_vars))
-            new_stmts[i] = f'return {new_var}'
+        if new_stmts[i].strip().startswith("return "):
+            new_stmts[i] = f"return {rng.choice(active_vars)}"
             return new_stmts
-    new_stmts.append(f'return {rng.choice(list(active_vars))}')
+    new_stmts.append(f"return {rng.choice(active_vars)}")
     return new_stmts
-OPERATORS: Dict[str, Callable[[random.Random, List[str]], List[str]]] = {'insert_assign': op_insert_assign, 'insert_if': op_insert_if, 'insert_while': op_insert_while, 'delete_stmt': op_delete_stmt, 'modify_line': op_modify_line, 'tweak_const': op_tweak_const, 'change_binary': op_change_binary, 'list_manip': op_list_manipulation, 'modify_return': op_modify_return}
+
+
+OPERATORS: Dict[str, Callable[[random.Random, List[str]], List[str]]] = {
+    "insert_assign": op_insert_assign,
+    "insert_if": op_insert_if,
+    "insert_while": op_insert_while,
+    "delete_stmt": op_delete_stmt,
+    "modify_line": op_modify_line,
+    "tweak_const": op_tweak_const,
+    "change_binary": op_change_binary,
+    "list_manip": op_list_manipulation,
+    "modify_return": op_modify_return,
+}
 PRIMITIVE_OPS = list(OPERATORS.keys())
+
+# @@OPERATORS_LIB_START@@
 OPERATORS_LIB: Dict[str, Dict] = {}
+# @@OPERATORS_LIB_END@@
+
 
 def apply_synthesized_op(rng: random.Random, stmts: List[str], steps: List[str]) -> List[str]:
-    """Apply a sequence of primitive operators to create a compound mutation."""
     result = stmts
     for step in steps:
         if step in OPERATORS:
@@ -643,135 +880,142 @@ def apply_synthesized_op(rng: random.Random, stmts: List[str], steps: List[str])
     return result
 
 def synthesize_new_operator(rng: random.Random) -> Tuple[str, Dict]:
-    """Runtime synthesis: create a NEW operator by combining primitives."""
     n_steps = rng.randint(2, 4)
-    steps = [rng.choice(list(OPERATORS.keys())) for _ in range(n_steps)]
+    steps = [rng.choice(PRIMITIVE_OPS) for _ in range(n_steps)]
     name = f"synth_{sha256(''.join(steps) + str(time.time()))[:8]}"
-    return (name, {'steps': steps, 'score': 0.0})
+    return (name, {"steps": steps, "score": 0.0})
+
+
+# ---------------------------
+# Surrogate + MAP-Elites
+# ---------------------------
 
 class SurrogateModel:
-
-    def __init__(self, k: int=5):
+    def __init__(self, k: int = 5):
         self.k = k
         self.memory: List[Tuple[List[float], float]] = []
 
     def _extract_features(self, code: str) -> List[float]:
-        """Extract lightweight features from code string."""
-        return [len(code), code.count('\n'), code.count('if '), code.count('while '), code.count('='), code.count('return '), code.count('(')]
+        return [
+            len(code),
+            code.count("\n"),
+            code.count("if "),
+            code.count("while "),
+            code.count("="),
+            code.count("return "),
+            code.count("("),
+        ]
 
     def train(self, history: List[Dict]):
-        """Train model on history."""
         self.memory = []
         for h in history[-200:]:
-            src = h.get('code') or h.get('expr')
-            if src and 'score' in h and isinstance(h['score'], (int, float)):
+            src = h.get("code") or h.get("expr")
+            if src and "score" in h and isinstance(h["score"], (int, float)):
                 feat = self._extract_features(src)
-                self.memory.append((feat, float(h['score'])))
+                self.memory.append((feat, float(h["score"])))
 
-    def predict(self, expr: str) -> float:
-        """Predict score using weighted KNN."""
+    def predict(self, code: str) -> float:
         if not self.memory:
             return 0.0
-        target = self._extract_features(expr)
+        target = self._extract_features(code)
         dists = []
         for feat, score in self.memory:
-            d = sum(((f1 - f2) ** 2 for f1, f2 in zip(target, feat))) ** 0.5
+            d = sum((f1 - f2) ** 2 for f1, f2 in zip(target, feat)) ** 0.5
             dists.append((d, score))
         dists.sort(key=lambda x: x[0])
-        nearest = dists[:self.k]
+        nearest = dists[: self.k]
         total_w = 0.0
-        weighted_score = 0.0
+        weighted = 0.0
         for d, s in nearest:
-            w = 1.0 / (d + 1e-06)
-            weighted_score += s * w
+            w = 1.0 / (d + 1e-6)
+            weighted += s * w
             total_w += w
-        return weighted_score / total_w if total_w > 0 else 0.0
+        return weighted / total_w if total_w > 0 else 0.0
+
+
 SURROGATE = SurrogateModel()
 
-def update_operators_lib(op_name: str, delta_score: float):
-    """Update operator library scores based on performance."""
-    if op_name in OPERATORS_LIB:
-        OPERATORS_LIB[op_name]['score'] += delta_score
 
 class MAPElitesArchive:
-
     def __init__(self):
         self.grid: Dict[Tuple[int, int], Tuple[float, Genome]] = {}
 
     def _features(self, code: str) -> Tuple[int, int]:
-        """Map code to feature bin coordinates."""
-        l = len(code)
-        l_bin = min(20, l // 20)
-        d = code.count('\n')
-        d_bin = min(10, d // 2)
+        l_bin = min(20, len(code) // 20)
+        d_bin = min(10, code.count("\n") // 2)
         return (l_bin, d_bin)
 
     def add(self, genome: Genome, score: float):
-        """Add genome to grid if it's the best in its cell."""
         feat = self._features(genome.code)
         if feat not in self.grid or score < self.grid[feat][0]:
             self.grid[feat] = (score, genome)
 
     def sample(self, rng: random.Random) -> Optional[Genome]:
-        """Return a random elite from the grid."""
         if not self.grid:
             return None
         return rng.choice(list(self.grid.values()))[1]
 
     def snapshot(self) -> Dict:
-        return {'grid_size': len(self.grid), 'entries': [(list(k), v[0], asdict(v[1])) for k, v in self.grid.items()]}
+        return {
+            "grid_size": len(self.grid),
+            "entries": [(list(k), v[0], asdict(v[1])) for k, v in self.grid.items()],
+        }
 
     @staticmethod
-    def from_snapshot(s: Dict) -> 'MAPElitesArchive':
+    def from_snapshot(s: Dict) -> "MAPElitesArchive":
         ma = MAPElitesArchive()
-        for k, score, g_dict in s.get('entries', []):
+        for k, score, g_dict in s.get("entries", []):
             ma.grid[tuple(k)] = (score, Genome(**g_dict))
         return ma
+
+
 MAP_ELITES = MAPElitesArchive()
 
 def save_map_elites(path: Path):
-    """Save MAP-Elites grid to JSON."""
-    path.write_text(json.dumps(MAP_ELITES.snapshot(), indent=2), encoding='utf-8')
+    path.write_text(json.dumps(MAP_ELITES.snapshot(), indent=2), encoding="utf-8")
 
 def load_map_elites(path: Path):
-    """Load MAP-Elites grid from JSON."""
+    global MAP_ELITES
     if path.exists():
-        global MAP_ELITES
         try:
-            MAP_ELITES = MAPElitesArchive.from_snapshot(json.loads(path.read_text(encoding='utf-8')))
-        except:
+            MAP_ELITES = MAPElitesArchive.from_snapshot(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
             pass
 
+
+# ---------------------------
+# Operator library evolution
+# ---------------------------
+
 def evolve_operator_meta(rng: random.Random) -> Tuple[str, Dict]:
-    """Evolve a new operator by recombining existing high-performing ones (Meta-GP)."""
-    candidates = [v for k, v in OPERATORS_LIB.items() if v.get('score', 0) > -5.0]
+    candidates = [v for _, v in OPERATORS_LIB.items() if v.get("score", 0) > -5.0]
     if len(candidates) < 2:
         return synthesize_new_operator(rng)
-    p1 = rng.choice(candidates)['steps']
-    p2 = rng.choice(candidates)['steps']
+    p1 = rng.choice(candidates)["steps"]
+    p2 = rng.choice(candidates)["steps"]
     cut = rng.randint(0, min(len(p1), len(p2)))
     child_steps = p1[:cut] + p2[cut:]
     if rng.random() < 0.5:
-        mut_type = rng.choice(['mod', 'add', 'del'])
-        if mut_type == 'mod' and child_steps:
+        mut_type = rng.choice(["mod", "add", "del"])
+        if mut_type == "mod" and child_steps:
             child_steps[rng.randint(0, len(child_steps) - 1)] = rng.choice(PRIMITIVE_OPS)
-        elif mut_type == 'add':
+        elif mut_type == "add":
             child_steps.insert(rng.randint(0, len(child_steps)), rng.choice(PRIMITIVE_OPS))
-        elif mut_type == 'del' and len(child_steps) > 1:
+        elif mut_type == "del" and len(child_steps) > 1:
             child_steps.pop(rng.randint(0, len(child_steps) - 1))
-    child_steps = child_steps[:6]
-    if not child_steps:
-        child_steps = [rng.choice(PRIMITIVE_OPS)]
+    child_steps = child_steps[:6] or [rng.choice(PRIMITIVE_OPS)]
     name = f"evo_{sha256(''.join(child_steps) + str(time.time()))[:8]}"
-    return (name, {'steps': child_steps, 'score': 0.0})
+    return (name, {"steps": child_steps, "score": 0.0})
 
-def maybe_evolve_operators_lib(rng: random.Random, threshold: int=10):
-    """Evolve the operator library: remove worst, add evolved ones."""
-    sorted_ops = sorted(OPERATORS_LIB.items(), key=lambda x: x[1].get('score', 0))
+def maybe_evolve_operators_lib(rng: random.Random, threshold: int = 10) -> Optional[str]:
+    # remove worst if very bad
     if len(OPERATORS_LIB) > 3:
+        sorted_ops = sorted(OPERATORS_LIB.items(), key=lambda x: x[1].get("score", 0))
         worst_name, worst_spec = sorted_ops[0]
-        if worst_spec.get('score', 0) < -threshold:
+        if worst_spec.get("score", 0) < -threshold:
             del OPERATORS_LIB[worst_name]
+
+    # add new until size
     if len(OPERATORS_LIB) < 8:
         if rng.random() < 0.7 and len(OPERATORS_LIB) >= 2:
             name, spec = evolve_operator_meta(rng)
@@ -779,79 +1023,41 @@ def maybe_evolve_operators_lib(rng: random.Random, threshold: int=10):
             name, spec = synthesize_new_operator(rng)
         OPERATORS_LIB[name] = spec
         return name
-        OPERATORS_LIB[name] = spec
-        return name
     return None
 
-class ProblemGenerator:
-    """Phase 3: Co-evolutionary Discriminator. Generates hard tasks via Parameter Curriculum."""
 
+# ---------------------------
+# Curriculum generator (simple)
+# ---------------------------
+
+class ProblemGenerator:
     def __init__(self):
         self.archive: List[Dict] = []
 
     def evolve_task(self, rng: random.Random, current_elites: List[Genome]) -> TaskSpec:
-        """Phase 3: Curriculum Learning (Parameter Evolution)."""
         arc_tasks = get_arc_tasks()
-        base_options = ['sort', 'reverse', 'max', 'filter']
-        arc_options = [f'arc_{tid}' for tid in arc_tasks] if arc_tasks else []
+        base_options = ["sort", "reverse", "max", "filter"]
+        arc_options = [f"arc_{tid}" for tid in arc_tasks] if arc_tasks else []
         options = base_options + arc_options
-        base_name = rng.choice(options) if options else 'sort'
+        base_name = rng.choice(options) if options else "sort"
         level = rng.randint(1, 3)
         mn = 3 + level
         mx = 5 + level
-        if base_name.startswith('arc_'):
+        if base_name.startswith("arc_"):
             mn, mx = (3, 5)
-        new_task = TaskSpec(name=base_name, n_train=64, n_hold=32, x_min=float(mn), x_max=float(mx), noise=0.0)
-        return new_task
+        return TaskSpec(name=base_name, n_train=64, n_hold=32, x_min=float(mn), x_max=float(mx), noise=0.0)
 
-    def _mutate_target(self, rng: random.Random, code: str) -> str:
-        return 'deprecated'
-        name = f'gen_task_{sha256(code)[:6]}'
-        task = TaskSpec(name=name, target_code=code, x_min=-5.0, x_max=5.0)
-        return task
 
-def _rewrite_operators_block(src: str, new_lib: Dict) -> str:
-    """Rewrite OPERATORS_LIB in source code with learned operators."""
-    pattern = '(# @@OPERATORS_LIB_START@@\\s*\\nOPERATORS_LIB:\\s*Dict\\[str,\\s*Dict\\]\\s*=\\s*)(\\{[^}]*\\})(\\s*\\n# @@OPERATORS_LIB_END@@)'
-    match = re.search(pattern, src, flags=re.DOTALL)
-    if not match:
-        return src
-    prefix, _, suffix = (match.group(1), match.group(2), match.group(3))
-    lines = ['{']
-    for name, spec in new_lib.items():
-        lines.append(f'    "{name}": {json.dumps(spec)},')
-    lines.append('}')
-    new_dict = '\n'.join(lines)
-    return src[:match.start()] + prefix + new_dict + suffix + src[match.end():]
-
-def save_operators_lib(path: Path):
-    """Save OPERATORS_LIB to JSON file."""
-    path.write_text(json.dumps(OPERATORS_LIB, indent=2), encoding='utf-8')
-
-def load_operators_lib(path: Path):
-    """Load OPERATORS_LIB from JSON file."""
-    global OPERATORS_LIB
-    if path.exists():
-        try:
-            OPERATORS_LIB.update(json.loads(path.read_text(encoding='utf-8')))
-        except:
-            pass
-
-def crossover(rng: random.Random, a: List[str], b: List[str]) -> List[str]:
-    if len(a) < 2 or len(b) < 2:
-        return a
-    idx_a = rng.randint(0, len(a))
-    idx_b = rng.randint(0, len(b))
-    return a[:idx_a] + b[idx_b:]
+# ---------------------------
+# Task detective (seeding hints)
+# ---------------------------
 
 class TaskDetective:
-
     @staticmethod
-    def detect_pattern(batch: Batch) -> Optional[str]:
-        """Analyze Input/Output pairs to guess the algorithmic pattern."""
+    def detect_pattern(batch: Optional[Batch]) -> Optional[str]:
         if not batch or not batch.x_tr:
             return None
-        check_set = zip(batch.x_tr[:5], batch.y_tr[:5])
+        check_set = list(zip(batch.x_tr[:5], batch.y_tr[:5]))
         is_sort = is_rev = is_max = is_min = is_len = True
         for x, y in check_set:
             if not isinstance(x, list) or not isinstance(y, (list, int, float)):
@@ -877,30 +1083,42 @@ class TaskDetective:
             else:
                 is_max = is_min = is_len = False
         if is_sort:
-            return 'HINT_SORT'
+            return "HINT_SORT"
         if is_rev:
-            return 'HINT_REVERSE'
+            return "HINT_REVERSE"
         if is_max:
-            return 'HINT_MAX'
+            return "HINT_MAX"
         if is_min:
-            return 'HINT_MIN'
+            return "HINT_MIN"
         if is_len:
-            return 'HINT_LEN'
+            return "HINT_LEN"
         return None
 
-def seed_genome(rng: random.Random, hint: str=None) -> Genome:
-    seeds = [['return x'], ['return sorted(x)'], ['return list(reversed(x))'], ['v0 = sorted(x)', 'return v0'], [f'return {_random_expr(rng, depth=0)}']]
-    if hint == 'HINT_SORT':
-        seeds.extend([['return sorted(x)']] * 5)
-    elif hint == 'HINT_REVERSE':
-        seeds.extend([['return list(reversed(x))']] * 5)
-    elif hint == 'HINT_MAX':
-        seeds.extend([['return max(x)']] * 5)
-    elif hint == 'HINT_MIN':
-        seeds.extend([['return min(x)']] * 5)
-    elif hint == 'HINT_LEN':
-        seeds.extend([['return len(x)']] * 5)
+
+def seed_genome(rng: random.Random, hint: Optional[str] = None) -> Genome:
+    seeds = [
+        ["return x"],
+        ["return sorted(x)"],
+        ["return list(reversed(x))"],
+        ["v0 = sorted(x)", "return v0"],
+        [f"return {_random_expr(rng, depth=0)}"],
+    ]
+    if hint == "HINT_SORT":
+        seeds.extend([["return sorted(x)"]] * 5)
+    elif hint == "HINT_REVERSE":
+        seeds.extend([["return list(reversed(x))"]] * 5)
+    elif hint == "HINT_MAX":
+        seeds.extend([["return max(x)"]] * 5)
+    elif hint == "HINT_MIN":
+        seeds.extend([["return min(x)"]] * 5)
+    elif hint == "HINT_LEN":
+        seeds.extend([["return len(x)"]] * 5)
     return Genome(statements=rng.choice(seeds))
+
+
+# ---------------------------
+# Function library (learned helpers)
+# ---------------------------
 
 @dataclass
 class LearnedFunc:
@@ -909,17 +1127,17 @@ class LearnedFunc:
     trust: float = 1.0
     uses: int = 0
 
-class FunctionLibrary:
 
-    def __init__(self, max_size: int=16):
+class FunctionLibrary:
+    def __init__(self, max_size: int = 16):
         self.funcs: Dict[str, LearnedFunc] = {}
         self.max_size = max_size
 
-    def maybe_adopt(self, rng: random.Random, expr: str, threshold: float=0.1) -> Optional[str]:
+    def maybe_adopt(self, rng: random.Random, expr: str, threshold: float = 0.1) -> Optional[str]:
         if len(self.funcs) >= self.max_size or rng.random() > threshold:
             return None
         try:
-            tree = ast.parse(expr, mode='eval').body
+            tree = ast.parse(expr, mode="eval").body
             nodes = list(ast.walk(tree))
             if len(nodes) < 4:
                 return None
@@ -927,13 +1145,13 @@ class FunctionLibrary:
             sub_expr = _to_src(sub)
             if node_count(sub_expr) < 3:
                 return None
-            ok, _ = validate_expr(sub_expr)
+            ok, _ = validate_expr(sub_expr, extra=set(self.funcs.keys()))
             if not ok:
                 return None
-            name = f'h{len(self.funcs) + 1}'
+            name = f"h{len(self.funcs) + 1}"
             self.funcs[name] = LearnedFunc(name=name, expr=sub_expr)
             return name
-        except:
+        except Exception:
             return None
 
     def maybe_inject(self, rng: random.Random, expr: str) -> Tuple[str, Optional[str]]:
@@ -942,11 +1160,11 @@ class FunctionLibrary:
         fn = rng.choice(list(self.funcs.values()))
         fn.uses += 1
         try:
-            call = f'{fn.name}(x)'
-            new = expr.replace('x', call, 1) if rng.random() < 0.5 else f'({expr}+{call})'
+            call = f"{fn.name}(x)"
+            new = expr.replace("x", call, 1) if rng.random() < 0.5 else f"({expr}+{call})"
             ok, _ = validate_expr(new, extra=set(self.funcs.keys()))
             return (new, fn.name) if ok else (expr, None)
-        except:
+        except Exception:
             return (expr, None)
 
     def update_trust(self, name: str, improved: bool):
@@ -955,24 +1173,32 @@ class FunctionLibrary:
             self.funcs[name].trust = clamp(self.funcs[name].trust, 0.1, 10.0)
 
     def get_helpers(self) -> Dict[str, Callable]:
-        return {n: (lambda e: lambda x: safe_eval(e, x))(f.expr) for n, f in self.funcs.items()}
+        # helper functions callable from evolved programs
+        helpers = {}
+        for n, f in self.funcs.items():
+            expr = f.expr
+            helpers[n] = (lambda e: (lambda x: safe_eval(e, x, extra_names=set(self.funcs.keys()))))(expr)
+        return helpers
 
     def snapshot(self) -> Dict:
-        return {'funcs': [asdict(f) for f in self.funcs.values()]}
+        return {"funcs": [asdict(f) for f in self.funcs.values()]}
 
     @staticmethod
-    def from_snapshot(s: Dict) -> 'FunctionLibrary':
+    def from_snapshot(s: Dict) -> "FunctionLibrary":
         lib = FunctionLibrary()
-        for fd in s.get('funcs', []):
-            lib.funcs[fd['name']] = LearnedFunc(**fd)
-        return lib
+        for fd in s.get("funcs", []):
+            lib.funcs[fd["name"]] = LearnedFunc(**fd)
         return lib
 
+
+# ---------------------------
+# Grammar induction (single definition)
+# ---------------------------
+
 def induce_grammar(pool: List[Genome]):
-    """Phase 4: Analyze top genomes to update GRAMMAR_PROBS (EDA step)."""
     if not pool:
         return
-    elites = pool[:max(10, len(pool) // 5)]
+    elites = pool[: max(10, len(pool) // 5)]
     counts = {k: 0.1 for k in GRAMMAR_PROBS}
     for g in elites:
         try:
@@ -981,14 +1207,14 @@ def induce_grammar(pool: List[Genome]):
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                     if node.func.id in counts:
                         counts[node.func.id] += 1.0
-                    counts['call'] += 1.0
+                    counts["call"] += 1.0
                 elif isinstance(node, ast.BinOp):
-                    counts['binop'] += 1.0
-                elif isinstance(node, ast.Name) and node.id == 'x':
-                    counts['var'] += 1.0
+                    counts["binop"] += 1.0
+                elif isinstance(node, ast.Name) and node.id == "x":
+                    counts["var"] += 1.0
                 elif isinstance(node, ast.Constant):
-                    counts['const'] += 1.0
-        except:
+                    counts["const"] += 1.0
+        except Exception:
             pass
     total = sum(counts.values())
     if total > 0:
@@ -997,20 +1223,34 @@ def induce_grammar(pool: List[Genome]):
             target = counts[k] / total * 100.0
             GRAMMAR_PROBS[k] = 0.8 * old + 0.2 * target
 
+
+# ---------------------------
+# MetaState (L0/L1 source-patchable)
+# ---------------------------
+
+OP_WEIGHT_INIT: Dict[str, float] = {
+    k: (5.0 if k in ("modify_return", "insert_assign", "list_manip") else 1.0)
+    for k in OPERATORS
+}
+
 @dataclass
 class MetaState:
-    op_weights: Dict[str, float] = field(default_factory=lambda: {k: 5.0 if k in ('modify_return', 'insert_assign', 'list_manip') else 1.0 for k in OPERATORS})
+    op_weights: Dict[str, float] = field(default_factory=lambda: dict(OP_WEIGHT_INIT))
     mutation_rate: float = 0.8863
     crossover_rate: float = 0.1971
     complexity_lambda: float = 0.0001
     epsilon_explore: float = 0.4213
     stuck_counter: int = 0
-    strategy: EngineStrategy = field(default_factory=lambda: EngineStrategy(selection_code=DEFAULT_SELECTION_CODE, crossover_code=DEFAULT_CROSSOVER_CODE, mutation_policy_code=DEFAULT_MUTATION_CODE))
+    strategy: EngineStrategy = field(default_factory=lambda: EngineStrategy(
+        selection_code=DEFAULT_SELECTION_CODE,
+        crossover_code=DEFAULT_CROSSOVER_CODE,
+        mutation_policy_code=DEFAULT_MUTATION_CODE
+    ))
 
     def sample_op(self, rng: random.Random) -> str:
         if rng.random() < self.epsilon_explore:
             return rng.choice(list(OPERATORS.keys()))
-        total = sum((max(0.01, w) for w in self.op_weights.values()))
+        total = sum(max(0.01, w) for w in self.op_weights.values())
         r = rng.random() * total
         acc = 0.0
         for k, w in self.op_weights.items():
@@ -1021,7 +1261,7 @@ class MetaState:
 
     def update(self, op: str, delta: float, accepted: bool):
         if op in self.op_weights:
-            reward = max(0, -delta) if accepted else -0.1
+            reward = max(0.0, -delta) if accepted else -0.1
             self.op_weights[op] = clamp(self.op_weights[op] + 0.1 * reward, 0.1, 5.0)
         if not accepted:
             self.stuck_counter += 1
@@ -1032,54 +1272,29 @@ class MetaState:
             self.stuck_counter = 0
             self.epsilon_explore = clamp(self.epsilon_explore - 0.01, 0.05, 0.3)
 
-def induce_grammar(pool: List[Genome]):
-    """Phase 4: Analyze top genomes to update GRAMMAR_PROBS (EDA step)."""
-    if not pool:
-        return
-    elites = pool[:max(10, len(pool) // 5)]
-    counts = {k: 0.1 for k in GRAMMAR_PROBS}
-    for g in elites:
-        try:
-            tree = ast.parse(g.code)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                    if node.func.id in counts:
-                        counts[node.func.id] += 1.0
-                    counts['call'] += 1.0
-                elif isinstance(node, ast.BinOp):
-                    counts['binop'] += 1.0
-                elif isinstance(node, ast.Name) and node.id == 'x':
-                    counts['var'] += 1.0
-                elif isinstance(node, ast.Constant):
-                    counts['const'] += 1.0
-        except:
-            pass
-    total = sum(counts.values())
-    if total > 0:
-        for k in counts:
-            old = GRAMMAR_PROBS.get(k, 1.0)
-            target = counts[k] / total * 100.0
-            GRAMMAR_PROBS[k] = 0.8 * old + 0.2 * target
 
 class MetaCognitiveEngine:
-
     @staticmethod
-    def analyze_execution(results: List[Tuple[Genome, EvalResult]], meta: 'MetaState'):
-        """Adjust strategy based on aggregate error patterns."""
-        errors = [r.err.split(':')[0] for _, r in results if not r.ok and r.err]
+    def analyze_execution(results: List[Tuple[Genome, EvalResult]], meta: MetaState):
+        errors = [r.err.split(":")[0] for _, r in results if (not r.ok and r.err)]
         if not errors:
             return
         counts = collections.Counter(errors)
         total_err = len(errors)
-        if counts['TypeError'] > total_err * 0.3:
-            if 'binop' in GRAMMAR_PROBS:
-                GRAMMAR_PROBS['binop'] *= 0.5
-            GRAMMAR_PROBS['var'] = GRAMMAR_PROBS.get('var', 1.0) * 1.5
-        if counts['IndexError'] > total_err * 0.3:
-            if 'list_manip' in meta.op_weights:
-                meta.op_weights['list_manip'] *= 0.7
-        if counts['StepLimitExceeded'] > total_err * 0.3:
+        if counts.get("TypeError", 0) > total_err * 0.3:
+            if "binop" in GRAMMAR_PROBS:
+                GRAMMAR_PROBS["binop"] *= 0.5
+            GRAMMAR_PROBS["var"] = GRAMMAR_PROBS.get("var", 1.0) * 1.5
+        if counts.get("IndexError", 0) > total_err * 0.3:
+            if "list_manip" in meta.op_weights:
+                meta.op_weights["list_manip"] *= 0.7
+        if counts.get("StepLimitExceeded", 0) > total_err * 0.3:
             meta.complexity_lambda *= 2.0
+
+
+# ---------------------------
+# Universe / Multiverse
+# ---------------------------
 
 @dataclass
 class Universe:
@@ -1090,124 +1305,172 @@ class Universe:
     library: FunctionLibrary
     discriminator: ProblemGenerator = field(default_factory=ProblemGenerator)
     best: Optional[Genome] = None
-    best_score: float = float('inf')
-    best_hold: float = float('inf')
-    best_stress: float = float('inf')
+    best_score: float = float("inf")
+    best_hold: float = float("inf")
+    best_stress: float = float("inf")
     history: List[Dict] = field(default_factory=list)
 
     def step(self, gen: int, task: TaskSpec, pop_size: int) -> Dict:
         rng = random.Random(self.seed + gen * 1009)
         batch = sample_batch(rng, task)
-        scored = []
-        all_results = []
+        if batch is None:
+            self.pool = [seed_genome(rng) for _ in range(pop_size)]
+            return {"gen": gen, "accepted": False, "reason": "no_batch"}
+
+        helper_env = self.library.get_helpers()
+
+        scored: List[Tuple[Genome, EvalResult]] = []
+        all_results: List[Tuple[Genome, EvalResult]] = []
         for g in self.pool:
-            res = evaluate(g, batch, task.name, self.meta.complexity_lambda)
+            res = evaluate(g, batch, task.name, self.meta.complexity_lambda, extra_env=helper_env)
             all_results.append((g, res))
             if res.ok:
                 scored.append((g, res))
+
         MetaCognitiveEngine.analyze_execution(all_results, self.meta)
+
         if not scored:
             hint = TaskDetective.detect_pattern(batch)
             self.pool = [seed_genome(rng, hint) for _ in range(pop_size)]
-            return {'gen': gen, 'accepted': False, 'reason': 'reseed'}
+            return {"gen": gen, "accepted": False, "reason": "reseed"}
+
         scored.sort(key=lambda t: t[1].score)
-        if scored:
-            best_g, best_res = scored[0]
-            MAP_ELITES.add(best_g, best_res.score)
-        sel_ctx = {'pool': [g for g, _ in scored], 'scores': [res.score for _, res in scored], 'pop_size': pop_size, 'map_elites': MAP_ELITES, 'rng': rng}
+
+        # MAP-Elites add
+        best_g0, best_res0 = scored[0]
+        MAP_ELITES.add(best_g0, best_res0.score)
+
+        # selection via strategy
+        sel_ctx = {
+            "pool": [g for g, _ in scored],
+            "scores": [res.score for _, res in scored],
+            "pop_size": pop_size,
+            "map_elites": MAP_ELITES,
+            "rng": rng,
+        }
         sel_res = safe_exec_engine(self.meta.strategy.selection_code, sel_ctx)
-        if sel_res and isinstance(sel_res, (tuple, list)) and (len(sel_res) == 2):
+        if sel_res and isinstance(sel_res, (tuple, list)) and len(sel_res) == 2:
             elites, parenting_pool = sel_res
         else:
-            elites = [g for g, _ in scored[:max(4, pop_size // 10)]]
+            elites = [g for g, _ in scored[: max(4, pop_size // 10)]]
             parenting_pool = [rng.choice(elites) for _ in range(pop_size - len(elites))]
+
         candidates: List[Genome] = []
         needed = pop_size - len(elites)
-        attempts_needed = needed * 2
+        attempts_needed = max(needed * 2, needed + 8)
         mate_pool = list(elites) + list(parenting_pool)
+
         while len(candidates) < attempts_needed:
             parent = rng.choice(parenting_pool) if parenting_pool else rng.choice(elites)
             new_stmts = None
-            op_tag = 'copy'
+            op_tag = "copy"
+
+            # crossover
             if rng.random() < self.meta.crossover_rate and len(mate_pool) > 1:
                 p2 = rng.choice(mate_pool)
-                cross_ctx = {'p1': parent.statements, 'p2': p2.statements, 'rng': rng}
+                cross_ctx = {"p1": parent.statements, "p2": p2.statements, "rng": rng}
                 new_stmts = safe_exec_engine(self.meta.strategy.crossover_code, cross_ctx)
-                if new_stmts:
-                    op_tag = 'crossover'
+                if new_stmts and isinstance(new_stmts, list):
+                    op_tag = "crossover"
+                else:
+                    new_stmts = None
+
             if not new_stmts:
                 new_stmts = parent.statements[:]
-            if op_tag == 'copy' and rng.random() < self.meta.mutation_rate:
-                use_synth = rng.random() < 0.3 and OPERATORS_LIB
+
+            # mutation
+            if op_tag in ("copy", "crossover") and rng.random() < self.meta.mutation_rate:
+                use_synth = rng.random() < 0.3 and bool(OPERATORS_LIB)
                 if use_synth:
                     synth_name = rng.choice(list(OPERATORS_LIB.keys()))
-                    steps = OPERATORS_LIB[synth_name].get('steps', [])
+                    steps = OPERATORS_LIB[synth_name].get("steps", [])
                     new_stmts = apply_synthesized_op(rng, new_stmts, steps)
-                    op_tag = f'synth:{synth_name}'
+                    op_tag = f"synth:{synth_name}"
                 else:
                     op = self.meta.sample_op(rng)
                     if op in OPERATORS:
                         new_stmts = OPERATORS[op](rng, new_stmts)
-                    op_tag = f'mut:{op}'
+                    op_tag = f"mut:{op}"
+
             candidates.append(Genome(statements=new_stmts, parents=[parent.gid], op_tag=op_tag))
-        with_pred = []
-        for c in candidates:
-            score_est = SURROGATE.predict(c.code)
-            with_pred.append((c, score_est))
+
+        # surrogate ranking
+        with_pred = [(c, SURROGATE.predict(c.code)) for c in candidates]
         with_pred.sort(key=lambda x: x[1])
         selected_children = [c for c, _ in with_pred[:needed]]
+
         self.pool = list(elites) + selected_children
+
+        # occasionally evolve operator library
         if rng.random() < 0.02:
             maybe_evolve_operators_lib(rng)
+
+        # grammar induction
         if gen % 5 == 0:
             induce_grammar(list(elites))
+
+        # acceptance update
         best_g, best_res = scored[0]
         old_score = self.best_score
-        accepted = best_res.score < self.best_score - 1e-09
+        accepted = best_res.score < self.best_score - 1e-9
         if accepted:
             self.best = best_g
             self.best_score = best_res.score
             self.best_hold = best_res.hold
             self.best_stress = best_res.stress
-        op_used = best_g.op_tag.split(':')[1].split('|')[0] if ':' in best_g.op_tag else 'unknown'
+
+        op_used = best_g.op_tag.split(":")[1].split("|")[0] if ":" in best_g.op_tag else "unknown"
         self.meta.update(op_used, self.best_score - old_score, accepted)
-        log = {'gen': gen, 'accepted': accepted, 'score': self.best_score, 'hold': self.best_hold, 'stress': self.best_stress, 'code': self.best.code if self.best else 'none'}
+
+        log = {
+            "gen": gen,
+            "accepted": accepted,
+            "score": self.best_score,
+            "hold": self.best_hold,
+            "stress": self.best_stress,
+            "code": self.best.code if self.best else "none",
+        }
         self.history.append(log)
         if gen % 5 == 0:
             SURROGATE.train(self.history)
         return log
 
-    def co_evolve_step(self, gen: int, current_task: TaskSpec, pop_size: int) -> Tuple[Dict, Optional[TaskSpec]]:
-        """Phase 3 Loop: Identify if we need a new task."""
-        log = self.step(gen, current_task, pop_size)
-        new_task = None
-        if self.best_score < 1.0:
-            rng = random.Random(self.seed + gen)
-            new_task = self.discriminator.evolve_task(rng, self.pool[:5])
-            self.best_score = float('inf')
-            self.pool = [seed_genome(rng) for _ in range(pop_size)]
-        return (log, new_task)
-
     def snapshot(self) -> Dict:
-        return {'uid': self.uid, 'seed': self.seed, 'meta': asdict(self.meta), 'best': asdict(self.best) if self.best else None, 'best_score': self.best_score, 'best_hold': self.best_hold, 'best_stress': self.best_stress, 'pool': [asdict(g) for g in self.pool[:20]], 'library': self.library.snapshot(), 'history': self.history[-50:]}
+        return {
+            "uid": self.uid,
+            "seed": self.seed,
+            "meta": asdict(self.meta),
+            "best": asdict(self.best) if self.best else None,
+            "best_score": self.best_score,
+            "best_hold": self.best_hold,
+            "best_stress": self.best_stress,
+            "pool": [asdict(g) for g in self.pool[:20]],
+            "library": self.library.snapshot(),
+            "history": self.history[-50:],
+        }
 
     @staticmethod
-    def from_snapshot(s: Dict) -> 'Universe':
-        meta_data = s.get('meta', {})
-        if 'strategy' in meta_data and isinstance(meta_data['strategy'], dict):
-            meta_data['strategy'] = EngineStrategy(**meta_data['strategy'])
-        meta = MetaState(**{k: v for k, v in meta_data.items() if k != 'op_weights'})
-        meta.op_weights = meta_data.get('op_weights', {k: 1.0 for k in OPERATORS})
-        pool = [Genome(**g) for g in s.get('pool', [])]
-        lib = FunctionLibrary.from_snapshot(s.get('library', {}))
-        u = Universe(uid=s.get('uid', 0), seed=s.get('seed', 0), meta=meta, pool=pool, library=lib)
-        if s.get('best'):
-            u.best = Genome(**s['best'])
-        u.best_score = s.get('best_score', float('inf'))
-        u.best_hold = s.get('best_hold', float('inf'))
-        u.best_stress = s.get('best_stress', float('inf'))
-        u.history = s.get('history', [])
+    def from_snapshot(s: Dict) -> "Universe":
+        meta_data = s.get("meta", {})
+        if "strategy" in meta_data and isinstance(meta_data["strategy"], dict):
+            meta_data["strategy"] = EngineStrategy(**meta_data["strategy"])
+        meta = MetaState(**{k: v for k, v in meta_data.items() if k != "op_weights"})
+        meta.op_weights = meta_data.get("op_weights", dict(OP_WEIGHT_INIT))
+        pool = [Genome(**g) for g in s.get("pool", [])]
+        lib = FunctionLibrary.from_snapshot(s.get("library", {}))
+        u = Universe(uid=s.get("uid", 0), seed=s.get("seed", 0), meta=meta, pool=pool, library=lib)
+        if s.get("best"):
+            u.best = Genome(**s["best"])
+        u.best_score = s.get("best_score", float("inf"))
+        u.best_hold = s.get("best_hold", float("inf"))
+        u.best_stress = s.get("best_stress", float("inf"))
+        u.history = s.get("history", [])
         return u
+
+
+# ---------------------------
+# State persistence
+# ---------------------------
 
 @dataclass
 class GlobalState:
@@ -1219,27 +1482,49 @@ class GlobalState:
     universes: List[Dict]
     selected_uid: int = 0
     generations_done: int = 0
-STATE_DIR = Path('.rsi_state')
+
+STATE_DIR = Path(".rsi_state")
+
+def save_operators_lib(path: Path):
+    path.write_text(json.dumps(OPERATORS_LIB, indent=2), encoding="utf-8")
+
+def load_operators_lib(path: Path):
+    global OPERATORS_LIB
+    if path.exists():
+        try:
+            OPERATORS_LIB.update(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            pass
 
 def save_state(gs: GlobalState):
     gs.updated_ms = now_ms()
-    write_json(STATE_DIR / 'state.json', asdict(gs))
-    save_operators_lib(STATE_DIR / 'operators_lib.json')
-    save_map_elites(STATE_DIR / 'map_elites.json')
+    write_json(STATE_DIR / "state.json", asdict(gs))
+    save_operators_lib(STATE_DIR / "operators_lib.json")
+    save_map_elites(STATE_DIR / "map_elites.json")
 
 def load_state() -> Optional[GlobalState]:
-    p = STATE_DIR / 'state.json'
+    p = STATE_DIR / "state.json"
     if not p.exists():
         return None
     try:
-        load_operators_lib(STATE_DIR / 'operators_lib.json')
-        load_map_elites(STATE_DIR / 'map_elites.json')
+        load_operators_lib(STATE_DIR / "operators_lib.json")
+        load_map_elites(STATE_DIR / "map_elites.json")
         return GlobalState(**read_json(p))
-    except:
+    except Exception:
         return None
 
-def run_multiverse(seed: int, task: TaskSpec, gens: int, pop: int, n_univ: int, resume: bool=False, save_every: int=5) -> GlobalState:
+
+def run_multiverse(
+    seed: int,
+    task: TaskSpec,
+    gens: int,
+    pop: int,
+    n_univ: int,
+    resume: bool = False,
+    save_every: int = 5,
+) -> GlobalState:
     safe_mkdir(STATE_DIR)
+
     if resume and (gs0 := load_state()):
         us = [Universe.from_snapshot(s) for s in gs0.universes]
         start = gs0.generations_done
@@ -1247,22 +1532,62 @@ def run_multiverse(seed: int, task: TaskSpec, gens: int, pop: int, n_univ: int, 
         b0 = sample_batch(random.Random(seed), task)
         hint = TaskDetective.detect_pattern(b0)
         if hint:
-            print(f'[Detective] Detected pattern: {hint}. Injecting smart seeds.')
-        us = [Universe(uid=i, seed=seed + i * 9973, meta=MetaState(), pool=[seed_genome(random.Random(seed + i), hint) for _ in range(pop)], library=FunctionLibrary()) for i in range(n_univ)]
+            print(f"[Detective] Detected pattern: {hint}. Injecting smart seeds.")
+        us = [
+            Universe(
+                uid=i,
+                seed=seed + i * 9973,
+                meta=MetaState(),
+                pool=[seed_genome(random.Random(seed + i), hint) for _ in range(pop)],
+                library=FunctionLibrary(),
+            )
+            for i in range(n_univ)
+        ]
         start = 0
+
     for gen in range(start, start + gens):
         for u in us:
             u.step(gen, task, pop)
+
         us.sort(key=lambda u: u.best_score)
         best = us[0]
-        print(f"[Gen {gen + 1:4d}] Score: {best.best_score:.4f} | Hold: {best.best_hold:.4f} | Stress: {best.best_stress:.4f} | {(best.best.code if best.best else 'none')}")
+        print(
+            f"[Gen {gen + 1:4d}] Score: {best.best_score:.4f} | Hold: {best.best_hold:.4f} | Stress: {best.best_stress:.4f} | "
+            f"{(best.best.code if best.best else 'none')}"
+        )
+
         if save_every > 0 and (gen + 1) % save_every == 0:
-            gs = GlobalState('RSI_EXT_v1', now_ms(), now_ms(), seed, asdict(task), [u.snapshot() for u in us], us[0].uid, gen + 1)
+            gs = GlobalState(
+                "RSI_EXT_FIXED_v1",
+                now_ms(),
+                now_ms(),
+                seed,
+                asdict(task),
+                [u.snapshot() for u in us],
+                us[0].uid,
+                gen + 1,
+            )
             save_state(gs)
-    gs = GlobalState('RSI_EXT_v1', now_ms(), now_ms(), seed, asdict(task), [u.snapshot() for u in us], us[0].uid, start + gens)
+
+    gs = GlobalState(
+        "RSI_EXT_FIXED_v1",
+        now_ms(),
+        now_ms(),
+        seed,
+        asdict(task),
+        [u.snapshot() for u in us],
+        us[0].uid,
+        start + gens,
+    )
     save_state(gs)
     return gs
-PATCH_LEVELS = {0: 'hyperparameter', 1: 'op_weight', 2: 'operator_toggle', 3: 'eval_weight', 4: 'operator_inject', 5: 'meta_logic'}
+
+
+# ---------------------------
+# Self-modification (AutoPatch)
+# ---------------------------
+
+PATCH_LEVELS = {0: "hyperparameter", 1: "op_weight", 2: "operator_toggle", 3: "eval_weight", 4: "operator_persist", 5: "meta_logic"}
 
 @dataclass
 class PatchPlan:
@@ -1274,180 +1599,271 @@ class PatchPlan:
     diff: str
 
 def _read_self() -> str:
-    return Path(__file__).read_text(encoding='utf-8')
+    return Path(__file__).read_text(encoding="utf-8")
 
-def _patch_dataclass(src: str, cls: str, field: str, val: Any) -> Tuple[bool, str]:
+def _patch_dataclass(src: str, cls: str, field_name: str, val: Any) -> Tuple[bool, str]:
     try:
         mod = ast.parse(src)
         patched = False
         for node in ast.walk(mod):
             if isinstance(node, ast.ClassDef) and node.name == cls:
                 for stmt in node.body:
-                    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and (stmt.target.id == field):
+                    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id == field_name:
                         stmt.value = ast.Constant(value=val)
                         patched = True
         if not patched:
             return (False, src)
         ast.fix_missing_locations(mod)
         return (True, ast.unparse(mod))
-    except:
+    except Exception:
         return (False, src)
 
 def _patch_global_const(src: str, name: str, val: float) -> Tuple[bool, str]:
-    pattern = f'^({name}\\s*=\\s*)[\\d.eE+-]+'
-    new_src, n = re.subn(pattern, f'\\g<1>{val}', src, flags=re.MULTILINE)
+    pattern = f"^({re.escape(name)}\\s*=\\s*)[\\d.eE+-]+"
+    new_src, n = re.subn(pattern, f"\\g<1>{val}", src, flags=re.MULTILINE)
     return (n > 0, new_src)
 
-def _patch_add_operator(src: str, op_name: str, op_code: str) -> Tuple[bool, str]:
-    fn_code = f'\ndef {op_name}(rng: random.Random, expr: str) -> str:\n    {op_code}\n'
-    reg_line = f'    "{op_name[3:]}": {op_name},'
-    if 'OPERATORS:' in src:
-        insert_pos = src.find('OPERATORS:')
-        bracket_pos = src.find('{', insert_pos)
-        new_src = src[:bracket_pos + 1] + '\n' + reg_line + src[bracket_pos + 1:]
-        fn_insert = src.rfind('\n', 0, insert_pos)
-        new_src = new_src[:fn_insert] + fn_code + new_src[fn_insert:]
-        try:
-            ast.parse(new_src)
-            return (True, new_src)
-        except:
-            pass
-    return (False, src)
+def _patch_dict_const(src: str, dict_name: str, key: str, val: float) -> Tuple[bool, str]:
+    try:
+        mod = ast.parse(src)
+        patched = False
+        for node in ast.walk(mod):
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id == dict_name and isinstance(node.value, ast.Dict):
+                        # find key
+                        for i, k in enumerate(node.value.keys):
+                            if isinstance(k, ast.Constant) and k.value == key:
+                                node.value.values[i] = ast.Constant(value=float(val))
+                                patched = True
+        if not patched:
+            return (False, src)
+        ast.fix_missing_locations(mod)
+        return (True, ast.unparse(mod))
+    except Exception:
+        return (False, src)
+
+def _rewrite_operators_block(src: str, new_lib: Dict) -> str:
+    pattern = r"(# @@OPERATORS_LIB_START@@\s*\nOPERATORS_LIB:\s*Dict\[str,\s*Dict\]\s*=\s*)(\{.*?\})(\s*\n# @@OPERATORS_LIB_END@@)"
+    match = re.search(pattern, src, flags=re.DOTALL)
+    if not match:
+        return src
+    prefix, _, suffix = match.group(1), match.group(2), match.group(3)
+    lines = ["{"]
+    for name, spec in new_lib.items():
+        lines.append(f'    "{name}": {json.dumps(spec)},')
+    lines.append("}")
+    new_dict = "\n".join(lines)
+    return src[: match.start()] + prefix + new_dict + suffix + src[match.end():]
 
 def propose_patches(gs: GlobalState, levels: List[int]) -> List[PatchPlan]:
     src = _read_self()
     plans: List[PatchPlan] = []
     rng = random.Random(gs.updated_ms)
-    best_u = next((s for s in gs.universes if s.get('uid') == gs.selected_uid), gs.universes[0] if gs.universes else {})
-    meta = best_u.get('meta', {})
+
+    best_u = next((s for s in gs.universes if s.get("uid") == gs.selected_uid), gs.universes[0] if gs.universes else {})
+    meta = best_u.get("meta", {})
+
+    # L0: tune hyperparams (dataclass literal fields)
     if 0 in levels:
-        for cls, field, base in [('MetaState', 'mutation_rate', 0.65), ('MetaState', 'crossover_rate', 0.2), ('MetaState', 'epsilon_explore', 0.15)]:
-            cur = meta.get(field, base)
+        for cls, field_name, base in [
+            ("MetaState", "mutation_rate", 0.65),
+            ("MetaState", "crossover_rate", 0.2),
+            ("MetaState", "epsilon_explore", 0.15),
+        ]:
+            cur = meta.get(field_name, base)
             new_val = round(clamp(cur * rng.uniform(0.85, 1.15), 0.1, 0.95), 4)
-            ok, new_src = _patch_dataclass(src, cls, field, new_val)
+            ok, new_src = _patch_dataclass(src, cls, field_name, new_val)
             if ok and new_src != src:
-                plans.append(PatchPlan(0, sha256(f'{cls}.{field}={new_val}')[:8], f'L0: {cls}.{field} -> {new_val}', 'Adaptive tuning', new_src, unified_diff(src, new_src, 'script.py')))
+                plans.append(PatchPlan(
+                    0,
+                    sha256(f"{cls}.{field_name}={new_val}")[:8],
+                    f"L0: {cls}.{field_name} -> {new_val}",
+                    "Adaptive tuning",
+                    new_src,
+                    unified_diff(src, new_src, "script.py"),
+                ))
+
+    # L1: patch OP_WEIGHT_INIT dict entries (source-patchable now)
     if 1 in levels:
-        op_w = meta.get('op_weights', {})
-        if op_w:
-            for op, w in list(op_w.items())[:3]:
-                new_w = round(clamp(w * rng.uniform(0.9, 1.1), 0.1, 5.0), 3)
-                op_w[op] = new_w
-            pass
+        op_w = meta.get("op_weights", {})
+        # pick a few ops to perturb
+        if isinstance(op_w, dict) and op_w:
+            ops = list(op_w.items())[: min(4, len(op_w))]
+        else:
+            ops = list(OP_WEIGHT_INIT.items())[:4]
+        new_src = src
+        changed = False
+        for op, w in ops:
+            new_w = round(clamp(float(w) * rng.uniform(0.9, 1.1), 0.1, 5.0), 3)
+            ok, new_src2 = _patch_dict_const(new_src, "OP_WEIGHT_INIT", op, new_w)
+            if ok and new_src2 != new_src:
+                changed = True
+                new_src = new_src2
+        if changed and new_src != src:
+            plans.append(PatchPlan(
+                1,
+                sha256("L1:" + str(rng.random()))[:8],
+                "L1: OP_WEIGHT_INIT perturb",
+                "Operator-weight prior update",
+                new_src,
+                unified_diff(src, new_src, "script.py"),
+            ))
+
+    # L3: rebalance eval weights
     if 3 in levels:
-        for name, base in [('SCORE_W_HOLD', 0.6), ('SCORE_W_STRESS', 0.35), ('SCORE_W_TRAIN', 0.05)]:
+        for name, base in [("SCORE_W_HOLD", 0.6), ("SCORE_W_STRESS", 0.35), ("SCORE_W_TRAIN", 0.05)]:
             new_val = round(clamp(base * rng.uniform(0.8, 1.2), 0.05, 0.9), 2)
             ok, new_src = _patch_global_const(src, name, new_val)
             if ok and new_src != src:
-                plans.append(PatchPlan(3, sha256(f'{name}={new_val}')[:8], f'L3: {name} -> {new_val}', 'Eval rebalancing', new_src, unified_diff(src, new_src, 'script.py')))
-    if 4 in levels:
-        if OPERATORS_LIB:
-            new_src = _rewrite_operators_block(src, OPERATORS_LIB)
-            if new_src != src:
-                plans.append(PatchPlan(4, sha256(str(OPERATORS_LIB))[:8], f'L4: Persist {len(OPERATORS_LIB)} learned operators', f'Operators: {list(OPERATORS_LIB.keys())[:5]}', new_src, unified_diff(src, new_src, 'script.py')))
+                plans.append(PatchPlan(
+                    3,
+                    sha256(f"{name}={new_val}")[:8],
+                    f"L3: {name} -> {new_val}",
+                    "Eval rebalancing",
+                    new_src,
+                    unified_diff(src, new_src, "script.py"),
+                ))
+
+    # L4: persist OPERATORS_LIB into source (optional)
+    if 4 in levels and OPERATORS_LIB:
+        new_src = _rewrite_operators_block(src, OPERATORS_LIB)
+        if new_src != src:
+            plans.append(PatchPlan(
+                4,
+                sha256(str(OPERATORS_LIB))[:8],
+                f"L4: Persist {len(OPERATORS_LIB)} learned operators",
+                f"Operators: {list(OPERATORS_LIB.keys())[:5]}",
+                new_src,
+                unified_diff(src, new_src, "script.py"),
+            ))
+
+    # L5: simple meta-logic edits (conservative)
     if 5 in levels:
-        elite_mods = [('max(4, pop_size // 10)', 'max(4, pop_size // 8)'), ('max(4, pop_size // 8)', 'max(4, pop_size // 12)'), ('max(4, pop_size // 12)', 'max(4, pop_size // 10)')]
+        elite_mods = [
+            ("max(4, pop_size // 10)", "max(4, pop_size // 8)"),
+            ("max(4, pop_size // 8)", "max(4, pop_size // 12)"),
+            ("max(4, pop_size // 12)", "max(4, pop_size // 10)"),
+        ]
         for old_pat, new_pat in elite_mods:
             if old_pat in src:
                 new_src = src.replace(old_pat, new_pat, 1)
-                plans.append(PatchPlan(5, sha256(new_pat)[:8], f'L5: elite_k ratio change', 'Meta: selection pressure', new_src, unified_diff(src, new_src, 'script.py')))
+                plans.append(PatchPlan(
+                    5,
+                    sha256(new_pat)[:8],
+                    "L5: elite ratio change",
+                    "Meta: selection pressure",
+                    new_src,
+                    unified_diff(src, new_src, "script.py"),
+                ))
                 break
-        stuck_mods = [('self.stuck_counter > 20', 'self.stuck_counter > 15'), ('self.stuck_counter > 15', 'self.stuck_counter > 25'), ('self.stuck_counter > 25', 'self.stuck_counter > 20')]
-        for old_pat, new_pat in stuck_mods:
-            if old_pat in src:
-                new_src = src.replace(old_pat, new_pat, 1)
-                plans.append(PatchPlan(5, sha256(new_pat)[:8], f'L5: stuck threshold', 'Meta: stagnation detection', new_src, unified_diff(src, new_src, 'script.py')))
-                break
-        cand_mods = [('plans[:8]', 'plans[:10]'), ('plans[:10]', 'plans[:6]'), ('plans[:6]', 'plans[:8]')]
-        for old_pat, new_pat in cand_mods:
-            if old_pat in src:
-                new_src = src.replace(old_pat, new_pat)
-                plans.append(PatchPlan(5, sha256(new_pat)[:8], f'L5: candidate pool size', 'Meta: patch search breadth', new_src, unified_diff(src, new_src, 'script.py')))
-                break
+
     rng.shuffle(plans)
     return plans[:8]
 
-def probe_run(script: Path, gens: int=15, pop: int=32) -> float:
+def probe_run(script: Path, gens: int = 15, pop: int = 32) -> float:
     with tempfile.TemporaryDirectory() as td:
         try:
-            proc = subprocess.run([sys.executable, str(script), 'evolve', '--fresh', '--generations', str(gens), '--population', str(pop), '--universes', '1', '--state-dir', td], capture_output=True, text=True, timeout=90)
+            proc = subprocess.run(
+                [sys.executable, str(script), "evolve", "--fresh", "--generations", str(gens),
+                 "--population", str(pop), "--universes", "1", "--state-dir", td],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
             for line in reversed(proc.stdout.splitlines()):
-                if 'Score:' in line:
-                    m = re.search('Score:\\s*([\\d.]+)', line)
+                if "Score:" in line:
+                    m = re.search(r"Score:\s*([\d.]+)", line)
                     if m:
                         return float(m.group(1))
-        except:
+        except Exception:
             pass
-    return float('inf')
+    return float("inf")
 
-def run_deep_autopatch(levels: List[int], candidates: int=4, apply: bool=False) -> Dict:
+def run_deep_autopatch(levels: List[int], candidates: int = 4, apply: bool = False) -> Dict:
     gs = load_state()
     if not gs:
-        return {'error': 'No state. Run evolve first.'}
+        return {"error": "No state. Run evolve first."}
+
     script = Path(__file__).resolve()
     baseline = probe_run(script)
-    print(f'[AUTOPATCH L{levels}] Baseline: {baseline:.4f}')
+    print(f"[AUTOPATCH L{levels}] Baseline: {baseline:.4f}")
+
     plans = propose_patches(gs, levels)[:candidates]
     if not plans:
-        return {'error': 'No patches generated'}
+        return {"error": "No patches generated"}
+
     results = []
     best_plan, best_score = (None, baseline)
+
     for p in plans:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
             f.write(p.new_source)
             tmp = Path(f.name)
         try:
             score = probe_run(tmp)
-            improved = score < baseline - 1e-06
-            results.append({'level': p.level, 'id': p.patch_id, 'title': p.title, 'score': score, 'improved': improved})
-            print(f"[L{p.level}] {p.patch_id}: {p.title} -> {score:.4f} {('OK' if improved else 'FAIL')}")
+            improved = score < baseline - 1e-6
+            results.append({"level": p.level, "id": p.patch_id, "title": p.title, "score": score, "improved": improved})
+            print(f"[L{p.level}] {p.patch_id}: {p.title} -> {score:.4f} {'OK' if improved else 'FAIL'}")
             if improved and score < best_score:
-                best_score, best_plan = (score, p)
+                best_score, best_plan = score, p
         finally:
             tmp.unlink(missing_ok=True)
+
     if best_plan and apply:
-        backup = script.with_suffix('.bak')
+        backup = script.with_suffix(".bak")
         if not backup.exists():
-            backup.write_text(script.read_text(encoding='utf-8'), encoding='utf-8')
-        script.write_text(best_plan.new_source, encoding='utf-8')
-        print(f'[OK] Applied L{best_plan.level} patch: {best_plan.title}')
-        return {'applied': best_plan.patch_id, 'level': best_plan.level, 'score': best_score, 'results': results}
-    elif best_plan:
-        out = STATE_DIR / 'patched.py'
-        out.write_text(best_plan.new_source, encoding='utf-8')
-        print(f'[OK] Best patch saved to {out}')
-        return {'best': best_plan.patch_id, 'score': best_score, 'file': str(out), 'results': results}
-    return {'improved': False, 'baseline': baseline, 'results': results}
+            backup.write_text(script.read_text(encoding="utf-8"), encoding="utf-8")
+        script.write_text(best_plan.new_source, encoding="utf-8")
+        print(f"[OK] Applied L{best_plan.level} patch: {best_plan.title}")
+        return {"applied": best_plan.patch_id, "level": best_plan.level, "score": best_score, "results": results}
+
+    if best_plan:
+        out = STATE_DIR / "patched.py"
+        out.write_text(best_plan.new_source, encoding="utf-8")
+        print(f"[OK] Best patch saved to {out}")
+        return {"best": best_plan.patch_id, "score": best_score, "file": str(out), "results": results}
+
+    return {"improved": False, "baseline": baseline, "results": results}
 
 def run_rsi_loop(gens_per_round: int, rounds: int, levels: List[int], pop: int, n_univ: int):
-    """Continuous RSI: evolve -> autopatch -> evolve -> autopatch..."""
     task = TaskSpec()
     seed = int(time.time()) % 100000
     for r in range(rounds):
-        print(f"\n{'=' * 60}\n[RSI ROUND {r + 1}/{rounds}]\n{'=' * 60}")
-        print(f'[EVOLVE] {gens_per_round} generations...')
-        run_multiverse(seed, task, gens_per_round, pop, n_univ, resume=r > 0)
-        print(f'[AUTOPATCH] Trying L{levels}...')
+        print(f"\n{'='*60}\n[RSI ROUND {r+1}/{rounds}]\n{'='*60}")
+        print(f"[EVOLVE] {gens_per_round} generations...")
+        run_multiverse(seed, task, gens_per_round, pop, n_univ, resume=(r > 0))
+        print(f"[AUTOPATCH] Trying L{levels}...")
         result = run_deep_autopatch(levels, candidates=4, apply=True)
-        if result.get('applied'):
-            print(f'[RSI] Self-modified! Reloading...')
-    print(f'\n[RSI LOOP COMPLETE] {rounds} rounds finished')
+        if result.get("applied"):
+            print("[RSI] Self-modified! Reloading...")
+
+    print(f"\n[RSI LOOP COMPLETE] {rounds} rounds finished")
+
+
+# ---------------------------
+# CLI Commands
+# ---------------------------
 
 def cmd_selftest(args):
-    print('[selftest] Validating...')
-    assert validate_expr('sin(x) + x*x')[0]
+    print("[selftest] Validating...")
+    assert validate_expr("sin(x) + x*x")[0]
     assert not validate_expr("__import__('os')")[0]
+
     g = seed_genome(random.Random(42))
-    b = sample_batch(random.Random(42), TaskSpec())
-    r = evaluate(g, b)
+    t = TaskSpec()
+    b = sample_batch(random.Random(42), t)
+    assert b is not None
+    r = evaluate(g, b, t.name)
     assert isinstance(r.score, float)
-    print('[selftest] OK')
+    print("[selftest] OK")
     return 0
 
 def cmd_evolve(args):
     global STATE_DIR
     STATE_DIR = Path(args.state_dir)
-    run_multiverse(args.seed, TaskSpec(name=args.task), args.generations, args.population, args.universes, args.resume and (not args.fresh), args.save_every)
+    resume = bool(args.resume) and (not args.fresh)
+    run_multiverse(args.seed, TaskSpec(name=args.task), args.generations, args.population, args.universes, resume=resume, save_every=args.save_every)
     print(f"\n[OK] State saved to {STATE_DIR / 'state.json'}")
     return 0
 
@@ -1456,18 +1872,21 @@ def cmd_best(args):
     STATE_DIR = Path(args.state_dir)
     gs = load_state()
     if not gs:
-        print('No state.')
+        print("No state.")
         return 1
-    u = next((s for s in gs.universes if s.get('uid') == gs.selected_uid), gs.universes[0] if gs.universes else {})
-    print(f"Expr: {u.get('best', {}).get('expr', 'none')}")
+    u = next((s for s in gs.universes if s.get("uid") == gs.selected_uid), gs.universes[0] if gs.universes else {})
+    best = u.get("best")
+    if best:
+        g = Genome(**best)
+        print(g.code)
     print(f"Score: {u.get('best_score')} | Hold: {u.get('best_hold')} | Stress: {u.get('best_stress')}")
-    print(f'Generations: {gs.generations_done}')
+    print(f"Generations: {gs.generations_done}")
     return 0
 
 def cmd_autopatch(args):
     global STATE_DIR
     STATE_DIR = Path(args.state_dir)
-    levels = [int(l) for l in args.levels.split(',')]
+    levels = [int(l) for l in args.levels.split(",") if l.strip()]
     result = run_deep_autopatch(levels, args.candidates, args.apply)
     print(json.dumps(result, indent=2, default=str))
     return 0
@@ -1475,46 +1894,55 @@ def cmd_autopatch(args):
 def cmd_rsi_loop(args):
     global STATE_DIR
     STATE_DIR = Path(args.state_dir)
-    levels = [int(l) for l in args.levels.split(',')]
+    levels = [int(l) for l in args.levels.split(",") if l.strip()]
     run_rsi_loop(args.generations, args.rounds, levels, args.population, args.universes)
     return 0
 
 def build_parser():
-    p = argparse.ArgumentParser(prog='UNIFIED_RSI_EXTENDED', description='True RSI Engine with L0-L5 Self-Modification')
-    sub = p.add_subparsers(dest='cmd', required=True)
-    s = sub.add_parser('selftest')
+    p = argparse.ArgumentParser(prog="UNIFIED_RSI_EXTENDED_FIXED", description="True RSI Engine with L0-L5 Self-Modification (Fixed)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("selftest")
     s.set_defaults(fn=cmd_selftest)
-    e = sub.add_parser('evolve')
-    e.add_argument('--seed', type=int, default=1337)
-    e.add_argument('--generations', type=int, default=80)
-    e.add_argument('--population', type=int, default=128)
-    e.add_argument('--universes', type=int, default=4)
-    e.add_argument('--task', default='poly2')
-    e.add_argument('--resume', action='store_true')
-    e.add_argument('--fresh', action='store_true')
-    e.add_argument('--save-every', type=int, default=5)
-    e.add_argument('--state-dir', default='.rsi_state')
+
+    e = sub.add_parser("evolve")
+    e.add_argument("--seed", type=int, default=1337)
+    e.add_argument("--generations", type=int, default=80)
+    e.add_argument("--population", type=int, default=128)
+    e.add_argument("--universes", type=int, default=4)
+    e.add_argument("--task", default="poly2")
+    e.add_argument("--resume", action="store_true")
+    e.add_argument("--fresh", action="store_true")
+    e.add_argument("--save-every", type=int, default=5)
+    e.add_argument("--state-dir", default=".rsi_state")
     e.set_defaults(fn=cmd_evolve)
-    b = sub.add_parser('best')
-    b.add_argument('--state-dir', default='.rsi_state')
+
+    b = sub.add_parser("best")
+    b.add_argument("--state-dir", default=".rsi_state")
     b.set_defaults(fn=cmd_best)
-    a = sub.add_parser('autopatch')
-    a.add_argument('--levels', default='0,1,3')
-    a.add_argument('--candidates', type=int, default=4)
-    a.add_argument('--apply', action='store_true')
-    a.add_argument('--state-dir', default='.rsi_state')
+
+    a = sub.add_parser("autopatch")
+    a.add_argument("--levels", default="0,1,3")
+    a.add_argument("--candidates", type=int, default=4)
+    a.add_argument("--apply", action="store_true")
+    a.add_argument("--state-dir", default=".rsi_state")
     a.set_defaults(fn=cmd_autopatch)
-    r = sub.add_parser('rsi-loop')
-    r.add_argument('--generations', type=int, default=50)
-    r.add_argument('--rounds', type=int, default=5)
-    r.add_argument('--levels', default='0,1,3')
-    r.add_argument('--population', type=int, default=64)
-    r.add_argument('--universes', type=int, default=2)
-    r.add_argument('--state-dir', default='.rsi_state')
+
+    r = sub.add_parser("rsi-loop")
+    r.add_argument("--generations", type=int, default=50)
+    r.add_argument("--rounds", type=int, default=5)
+    r.add_argument("--levels", default="0,1,3")
+    r.add_argument("--population", type=int, default=64)
+    r.add_argument("--universes", type=int, default=2)
+    r.add_argument("--state-dir", default=".rsi_state")
     r.set_defaults(fn=cmd_rsi_loop)
+
     return p
 
 def main():
-    return build_parser().parse_args().fn(build_parser().parse_args())
-if __name__ == '__main__':
+    parser = build_parser()
+    args = parser.parse_args()
+    return args.fn(args)
+
+if __name__ == "__main__":
     raise SystemExit(main())
