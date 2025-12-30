@@ -15,10 +15,22 @@ RSI Levels:
 CLI:
   python UNIFIED_RSI_EXTENDED.py selftest
   python UNIFIED_RSI_EXTENDED.py evolve --fresh --generations 100
+  python UNIFIED_RSI_EXTENDED.py evolve --fresh --generations 50 --mode program
   python UNIFIED_RSI_EXTENDED.py learner-evolve --fresh --generations 100
+  python UNIFIED_RSI_EXTENDED.py meta-meta --episodes 20 --gens-per-episode 20
+  python UNIFIED_RSI_EXTENDED.py rsi-loop --generations 20 --rounds 5 --meta-meta
+  python UNIFIED_RSI_EXTENDED.py task-switch --task-a poly2 --task-b piecewise
+  python UNIFIED_RSI_EXTENDED.py report --state-dir .rsi_state
   python UNIFIED_RSI_EXTENDED.py autopatch --levels 0,1,3 --apply
   python UNIFIED_RSI_EXTENDED.py rsi-loop --generations 50 --rounds 10
   python UNIFIED_RSI_EXTENDED.py rsi-loop --generations 20 --rounds 5 --mode learner
+
+CHANGELOG
+---------
+L0: Solver supports expression genomes and strict program-mode genomes (Assign/If/Return only).
+L1: RuleDSL controls mutation/crossover/novelty/acceptance/curriculum knobs per generation.
+L2: Meta-meta loop proposes RuleDSL patches and accepts only when meta-test transfer improves.
+Metrics: frozen train/hold/stress/test sets, per-gen logs, and transfer report (AUC/regret/recovery/gap).
 """
 from __future__ import annotations
 
@@ -76,6 +88,92 @@ def unified_diff(old: str, new: str, name: str) -> str:
             tofile=name,
         )
     )
+
+
+class RunLogger:
+    def __init__(self, path: Path, window: int = 10, append: bool = False):
+        self.path = path
+        self.window = window
+        self.records: List[Dict[str, Any]] = []
+        self.best_scores: List[float] = []
+        self.best_hold: List[float] = []
+        self.seen_hashes: Set[str] = set()
+        safe_mkdir(self.path.parent)
+        if self.path.exists() and not append:
+            self.path.unlink()
+
+    def _window_slice(self, vals: List[float]) -> List[float]:
+        if not vals:
+            return []
+        return vals[-self.window :]
+
+    def log(
+        self,
+        gen: int,
+        task_id: str,
+        mode: str,
+        solver_hash: str,
+        rule_hash: str,
+        score_train: float,
+        score_hold: float,
+        score_stress: float,
+        score_test: float,
+        runtime_ms: int,
+        nodes: int,
+        depth: int,
+        accepted: bool,
+        novelty: float,
+        timeout_rate: float,
+        control_packet: Dict[str, Any],
+        meta_policy_params: Dict[str, Any],
+        task_descriptor: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        self.best_scores.append(score_hold)
+        self.best_hold.append(score_hold)
+        window_vals = self._window_slice(self.best_hold)
+        auc_window = sum(window_vals) / max(1, len(window_vals))
+        if len(self.best_hold) > self.window:
+            delta_best_window = self.best_hold[-1] - self.best_hold[-self.window]
+        else:
+            delta_best_window = self.best_hold[-1] - self.best_hold[0]
+        record = {
+            "gen": gen,
+            "task_id": task_id,
+            "mode": mode,
+            "solver_hash": solver_hash,
+            "rule_hash": rule_hash,
+            "score_train": score_train,
+            "score_hold": score_hold,
+            "score_stress": score_stress,
+            "score_test": score_test,
+            "auc_window": auc_window,
+            "delta_best_window": delta_best_window,
+            "runtime_ms": runtime_ms,
+            "nodes": nodes,
+            "depth": depth,
+            "accepted": accepted,
+            "novelty": novelty,
+            "timeout_rate": timeout_rate,
+            "control_packet": control_packet,
+            "meta_policy_params": meta_policy_params,
+            "task_descriptor": task_descriptor,
+        }
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+        self.records.append(record)
+        return record
+
+
+class RoundLogger:
+    def __init__(self, path: Path, append: bool = False):
+        self.path = path
+        safe_mkdir(self.path.parent)
+        if self.path.exists() and not append:
+            self.path.unlink()
+
+    def log(self, record: Dict[str, Any]) -> None:
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
 
 
 # ---------------------------
@@ -268,6 +366,74 @@ def validate_code(code: str) -> Tuple[bool, str]:
         return (False, str(e))
 
 
+class ProgramValidator(ast.NodeVisitor):
+    """Strict program-mode validator: Assign/If/Return only, no loops or attributes."""
+
+    _allowed = [
+        ast.Module,
+        ast.FunctionDef,
+        ast.arguments,
+        ast.arg,
+        ast.Return,
+        ast.Assign,
+        ast.Name,
+        ast.Constant,
+        ast.Expr,
+        ast.If,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Compare,
+        ast.Call,
+        ast.List,
+        ast.Tuple,
+        ast.Dict,
+        ast.Subscript,
+        ast.Slice,
+        ast.Load,
+        ast.Store,
+        ast.IfExp,
+        ast.operator,
+        ast.boolop,
+        ast.unaryop,
+        ast.cmpop,
+    ]
+    if hasattr(ast, "Index"):
+        _allowed.append(ast.Index)
+
+    ALLOWED = tuple(_allowed)
+
+    def __init__(self):
+        self.ok, self.err = (True, None)
+
+    def visit(self, node):
+        if not isinstance(node, self.ALLOWED):
+            self.ok, self.err = (False, f"Forbidden program node: {type(node).__name__}")
+            return
+        if isinstance(node, ast.Name):
+            if node.id.startswith("__") or node.id in ("open", "eval", "exec", "compile", "__import__", "globals", "locals"):
+                self.ok, self.err = (False, f"Forbidden name: {node.id}")
+                return
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name):
+                self.ok, self.err = (False, "Forbidden call form (non-Name callee)")
+                return
+        if isinstance(node, ast.Subscript):
+            if isinstance(node.value, ast.Name) and node.value.id in SAFE_BUILTINS:
+                self.ok, self.err = (False, "Forbidden subscript on builtin")
+                return
+        super().generic_visit(node)
+
+
+def validate_program(code: str) -> Tuple[bool, str]:
+    try:
+        tree = ast.parse(code)
+        v = ProgramValidator()
+        v.visit(tree)
+        return (v.ok, v.err or "")
+    except Exception as e:
+        return (False, str(e))
+
+
 class ExprValidator(ast.NodeVisitor):
     """Validate a single expression (mode='eval') allowing only safe names and safe call forms."""
     ALLOWED = (
@@ -344,6 +510,31 @@ def node_count(code: str) -> int:
     except Exception:
         return 999
 
+def ast_depth(code: str) -> int:
+    try:
+        tree = ast.parse(code)
+    except Exception:
+        return 0
+    max_depth = 0
+    stack = [(tree, 1)]
+    while stack:
+        node, depth = stack.pop()
+        max_depth = max(max_depth, depth)
+        for child in ast.iter_child_nodes(node):
+            stack.append((child, depth + 1))
+    return max_depth
+
+
+def program_limits_ok(code: str, max_nodes: int = 200, max_depth: int = 20, max_locals: int = 16) -> bool:
+    try:
+        tree = ast.parse(code)
+    except Exception:
+        return False
+    nodes = sum(1 for _ in ast.walk(tree))
+    depth = ast_depth(code)
+    locals_set = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    return nodes <= max_nodes and depth <= max_depth and len(locals_set) <= max_locals
+
 
 def safe_exec(code: str, x: Any, timeout_steps: int = 1000, extra_env: Optional[Dict[str, Any]] = None) -> Any:
     """Execute candidate code with step limit. Code must define run(x). Returns Any (float/list/grid)."""
@@ -359,7 +550,7 @@ def safe_exec(code: str, x: Any, timeout_steps: int = 1000, extra_env: Optional[
         if extra_env:
             env.update(extra_env)
 
-        exec(compile(tree, "<lgp>", "exec"), env)
+        exec(compile(tree, "<lgp>", "exec"), {"__builtins__": {}}, env)
         if "run" not in env:
             return float("nan")
         return env["run"](x)
@@ -472,15 +663,93 @@ def run():
 # ---------------------------
 
 @dataclass
+class TaskDescriptor:
+    name: str
+    family: str
+    input_kind: str
+    output_kind: str
+    n_train: int
+    n_hold: int
+    n_test: int
+    noise: float
+    stress_mult: float
+    has_switch: bool
+    nonlinear: bool
+
+    def vector(self) -> List[float]:
+        family_map = {
+            "poly": 0.1,
+            "piecewise": 0.3,
+            "rational": 0.5,
+            "switching": 0.7,
+            "classification": 0.9,
+            "list": 0.2,
+            "arc": 0.4,
+            "other": 0.6,
+        }
+        return [
+            family_map.get(self.family, 0.0),
+            1.0 if self.input_kind == "list" else 0.0,
+            1.0 if self.input_kind == "grid" else 0.0,
+            1.0 if self.output_kind == "class" else 0.0,
+            float(self.n_train) / 100.0,
+            float(self.n_hold) / 100.0,
+            float(self.n_test) / 100.0,
+            clamp(self.noise, 0.0, 1.0),
+            clamp(self.stress_mult / 5.0, 0.0, 2.0),
+            1.0 if self.has_switch else 0.0,
+            1.0 if self.nonlinear else 0.0,
+        ]
+
+    def snapshot(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class TaskSpec:
     name: str = "poly2"
     x_min: float = -3.0
     x_max: float = 3.0
     n_train: int = 96
     n_hold: int = 96
+    n_test: int = 96
     noise: float = 0.01
     stress_mult: float = 3.0
     target_code: Optional[str] = None
+    descriptor: Optional[TaskDescriptor] = None
+
+    def ensure_descriptor(self) -> TaskDescriptor:
+        if self.descriptor:
+            return self.descriptor
+        family = "other"
+        if self.name in ("poly2", "poly3"):
+            family = "poly"
+        elif self.name == "piecewise":
+            family = "piecewise"
+        elif self.name == "rational":
+            family = "rational"
+        elif self.name == "switching":
+            family = "switching"
+        elif self.name == "classification":
+            family = "classification"
+        elif self.name in ("sort", "reverse", "filter", "max", "even_reverse_sort"):
+            family = "list"
+        elif self.name.startswith("arc_"):
+            family = "arc"
+        self.descriptor = TaskDescriptor(
+            name=self.name,
+            family=family,
+            input_kind="list" if family == "list" else ("grid" if family == "arc" else "scalar"),
+            output_kind="class" if family == "classification" else "scalar",
+            n_train=self.n_train,
+            n_hold=self.n_hold,
+            n_test=self.n_test,
+            noise=self.noise,
+            stress_mult=self.stress_mult,
+            has_switch=self.name == "switching",
+            nonlinear=family in ("poly", "piecewise", "rational", "switching"),
+        )
+        return self.descriptor
 
 
 TARGET_FNS = {
@@ -493,8 +762,11 @@ TARGET_FNS = {
     "arc_inv": lambda x: [[1 - c if c in (0, 1) else c for c in r] for r in x],
     "poly2": lambda x: 0.7 * x * x - 0.2 * x + 0.3,
     "poly3": lambda x: 0.3 * x ** 3 - 0.5 * x + 0.1,
+    "piecewise": lambda x: (-0.5 * x + 1.0) if x < 0 else (0.3 * x * x + 0.1),
+    "rational": lambda x: (x * x + 1.0) / (1.0 + 0.5 * abs(x)),
     "sinmix": lambda x: math.sin(x) + 0.3 * math.cos(2 * x),
     "absline": lambda x: abs(x) + 0.2 * x,
+    "classification": lambda x: 1.0 if (x + 0.25 * math.sin(3 * x)) > 0 else 0.0,
 }
 
 
@@ -523,6 +795,8 @@ class Batch:
     y_ho: List[Any]
     x_st: List[Any]
     y_st: List[Any]
+    x_te: List[Any]
+    y_te: List[Any]
 
 def sample_batch(rng: random.Random, t: TaskSpec) -> Optional[Batch]:
     # function target
@@ -549,6 +823,7 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Optional[Batch]:
             x_all[:20], y_all[:20],
             x_all[:10], y_all[:10],
             x_all[:5],  y_all[:5],
+            x_all[5:10], y_all[5:10],
         )
 
     # list tasks
@@ -569,7 +844,9 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Optional[Batch]:
         y_tr = [f(x) for x in x_tr]
         y_ho = [f(x) for x in x_ho]
         y_st = [f(x) for x in x_st]
-        return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st)
+        x_te = gen_lists(max(1, t.n_test), t.x_min + 1, t.x_max + 1)
+        y_te = [f(x) for x in x_te]
+        return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st, x_te, y_te)
 
     if t.name in ("sort", "reverse", "filter", "max"):
         x_tr = gen_lists(t.n_train, t.x_min, t.x_max)
@@ -578,7 +855,9 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Optional[Batch]:
         y_tr = [f(x) for x in x_tr]
         y_ho = [f(x) for x in x_ho]
         y_st = [f(x) for x in x_st]
-        return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st)
+        x_te = gen_lists(max(1, t.n_test), t.x_min + 1, t.x_max + 1)
+        y_te = [f(x) for x in x_te]
+        return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st, x_te, y_te)
 
     # synthetic ARC-like generators if name starts with arc_
     if t.name.startswith("arc_"):
@@ -595,7 +874,32 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Optional[Batch]:
         y_tr = [f(x) for x in x_tr]
         y_ho = [f(x) for x in x_ho]
         y_st = [f(x) for x in x_st]
-        return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st)
+        x_te = gen_grids(10, dim)
+        y_te = [f(x) for x in x_te]
+        return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st, x_te, y_te)
+
+    if t.name == "switching":
+        def target_switch(pair):
+            x, s = pair
+            return TARGET_FNS["poly2"](x) if s < 0.5 else TARGET_FNS["sinmix"](x)
+
+        def gen_pairs(k, a, b):
+            data = []
+            for _ in range(k):
+                x = a + (b - a) * rng.random()
+                s = 1.0 if rng.random() > 0.5 else 0.0
+                data.append([x, s])
+            return data
+
+        x_tr = gen_pairs(t.n_train, t.x_min, t.x_max)
+        x_ho = gen_pairs(t.n_hold, t.x_min, t.x_max)
+        x_st = gen_pairs(t.n_hold, t.x_min * t.stress_mult, t.x_max * t.stress_mult)
+        x_te = gen_pairs(t.n_test, t.x_min, t.x_max)
+        y_tr = [target_switch(x) for x in x_tr]
+        y_ho = [target_switch(x) for x in x_ho]
+        y_st = [target_switch(x) for x in x_st]
+        y_te = [target_switch(x) for x in x_te]
+        return Batch(x_tr, y_tr, x_ho, y_ho, x_st, y_st, x_te, y_te)
 
     # numeric regression tasks
     xs = lambda n, a, b: [a + (b - a) * rng.random() for _ in range(n)]
@@ -605,7 +909,51 @@ def sample_batch(rng: random.Random, t: TaskSpec) -> Optional[Batch]:
     x_tr = xs(t.n_train, t.x_min, t.x_max)
     x_ho = xs(t.n_hold, t.x_min, t.x_max)
     x_st = xs(t.n_hold, mid - half * t.stress_mult, mid + half * t.stress_mult)
-    return Batch(x_tr, ys(x_tr, t.noise), x_ho, ys(x_ho, t.noise), x_st, ys(x_st, t.noise * t.stress_mult))
+    x_te = xs(t.n_test, t.x_min, t.x_max)
+    return Batch(
+        x_tr, ys(x_tr, t.noise),
+        x_ho, ys(x_ho, t.noise),
+        x_st, ys(x_st, t.noise * t.stress_mult),
+        x_te, ys(x_te, t.noise),
+    )
+
+
+def task_suite(seed: int) -> List[TaskSpec]:
+    base = [
+        TaskSpec(name="poly2", x_min=-3.0, x_max=3.0, n_train=96, n_hold=64, n_test=64, noise=0.01),
+        TaskSpec(name="piecewise", x_min=-4.0, x_max=4.0, n_train=96, n_hold=64, n_test=64, noise=0.01),
+        TaskSpec(name="rational", x_min=-5.0, x_max=5.0, n_train=96, n_hold=64, n_test=64, noise=0.02),
+        TaskSpec(name="switching", x_min=-3.0, x_max=3.0, n_train=96, n_hold=64, n_test=64, noise=0.0),
+        TaskSpec(name="classification", x_min=-4.0, x_max=4.0, n_train=96, n_hold=64, n_test=64, noise=0.0),
+    ]
+    rng = random.Random(seed)
+    rng.shuffle(base)
+    return base
+
+
+def split_meta_tasks(seed: int, meta_train_ratio: float = 0.6) -> Tuple[List[TaskSpec], List[TaskSpec]]:
+    suite = task_suite(seed)
+    cut = max(1, int(len(suite) * meta_train_ratio))
+    return suite[:cut], suite[cut:]
+
+
+FROZEN_BATCH_CACHE: Dict[str, Batch] = {}
+
+
+def _task_cache_key(task: TaskSpec, seed: int) -> str:
+    return f"{task.name}:{seed}:{task.x_min}:{task.x_max}:{task.n_train}:{task.n_hold}:{task.n_test}:{task.noise}:{task.stress_mult}:{task.target_code}"
+
+
+def get_task_batch(task: TaskSpec, seed: int, freeze_eval: bool = True) -> Optional[Batch]:
+    key = _task_cache_key(task, seed)
+    if freeze_eval and key in FROZEN_BATCH_CACHE:
+        return FROZEN_BATCH_CACHE[key]
+    h = int(sha256(key)[:8], 16)
+    rng = random.Random(h if freeze_eval else seed)
+    batch = sample_batch(rng, task)
+    if freeze_eval and batch is not None:
+        FROZEN_BATCH_CACHE[key] = batch
+    return batch
 
 
 # ---------------------------
@@ -688,14 +1036,15 @@ class EvalResult:
     train: float
     hold: float
     stress: float
+    test: float
     nodes: int
     score: float
     err: Optional[str] = None
 
 
-SCORE_W_HOLD = 0.49
-SCORE_W_STRESS = 0.28
-SCORE_W_TRAIN = 0.05
+SCORE_W_HOLD = 0.6
+SCORE_W_STRESS = 0.4
+SCORE_W_TRAIN = 0.0
 
 
 def calc_error(p: Any, t: Any) -> float:
@@ -785,10 +1134,19 @@ def calc_heuristic_loss(p: Any, t: Any, task_name: str, x: Any = None) -> float:
     return calc_error(p, t) + penalty
 
 
-def mse_exec(code: str, xs: List[Any], ys: List[Any], task_name: str = "", extra_env: Optional[Dict[str, Any]] = None) -> Tuple[bool, float, str]:
-    ok, err = validate_code(code)
+def mse_exec(
+    code: str,
+    xs: List[Any],
+    ys: List[Any],
+    task_name: str = "",
+    extra_env: Optional[Dict[str, Any]] = None,
+    validator: Callable[[str], Tuple[bool, str]] = validate_code,
+) -> Tuple[bool, float, str]:
+    ok, err = validator(code)
     if not ok:
         return (False, float("inf"), err)
+    if validator == validate_program and not program_limits_ok(code):
+        return (False, float("inf"), "program_limits")
     try:
         total_err = 0.0
         for x, y in zip(xs, ys):
@@ -804,16 +1162,24 @@ def mse_exec(code: str, xs: List[Any], ys: List[Any], task_name: str = "", extra
         return (False, float("inf"), f"{type(e).__name__}: {str(e)}")
 
 
-def evaluate(g: Genome, b: Batch, task_name: str, lam: float = 0.0001, extra_env: Optional[Dict[str, Any]] = None) -> EvalResult:
+def evaluate(
+    g: Genome,
+    b: Batch,
+    task_name: str,
+    lam: float = 0.0001,
+    extra_env: Optional[Dict[str, Any]] = None,
+    validator: Callable[[str], Tuple[bool, str]] = validate_code,
+) -> EvalResult:
     code = g.code
-    ok1, tr, e1 = mse_exec(code, b.x_tr, b.y_tr, task_name, extra_env=extra_env)
-    ok2, ho, e2 = mse_exec(code, b.x_ho, b.y_ho, task_name, extra_env=extra_env)
-    ok3, st, e3 = mse_exec(code, b.x_st, b.y_st, task_name, extra_env=extra_env)
-    ok = ok1 and ok2 and ok3 and all(math.isfinite(v) for v in (tr, ho, st))
+    ok1, tr, e1 = mse_exec(code, b.x_tr, b.y_tr, task_name, extra_env=extra_env, validator=validator)
+    ok2, ho, e2 = mse_exec(code, b.x_ho, b.y_ho, task_name, extra_env=extra_env, validator=validator)
+    ok3, st, e3 = mse_exec(code, b.x_st, b.y_st, task_name, extra_env=extra_env, validator=validator)
+    ok4, te, e4 = mse_exec(code, b.x_te, b.y_te, task_name, extra_env=extra_env, validator=validator)
+    ok = ok1 and ok2 and ok3 and ok4 and all(math.isfinite(v) for v in (tr, ho, st, te))
     nodes = node_count(code)
-    score = SCORE_W_HOLD * ho + SCORE_W_STRESS * st + SCORE_W_TRAIN * tr + lam * nodes
-    err = e1 or e2 or e3
-    return EvalResult(ok, tr, ho, st, nodes, score, err or None)
+    score = SCORE_W_HOLD * ho + SCORE_W_STRESS * st + lam * nodes
+    err = e1 or e2 or e3 or e4
+    return EvalResult(ok, tr, ho, st, te, nodes, score, err or None)
 
 
 def evaluate_learner(
@@ -826,10 +1192,10 @@ def evaluate_learner(
     """PHASE B: evaluate learner with adaptation on training only."""
     env = safe_load_module(learner.code)
     if not env:
-        return EvalResult(False, float("inf"), float("inf"), float("inf"), 0, float("inf"), "load_failed")
+        return EvalResult(False, float("inf"), float("inf"), float("inf"), float("inf"), 0, float("inf"), "load_failed")
     required = ["init_mem", "encode", "predict", "update", "objective"]
     if not all(name in env and callable(env[name]) for name in required):
-        return EvalResult(False, float("inf"), float("inf"), float("inf"), 0, float("inf"), "missing_funcs")
+        return EvalResult(False, float("inf"), float("inf"), float("inf"), float("inf"), 0, float("inf"), "missing_funcs")
 
     init_mem = env["init_mem"]
     encode = env["encode"]
@@ -866,15 +1232,16 @@ def evaluate_learner(
         train = run_eval(b.x_tr, b.y_tr, do_update=True)
         hold = run_eval(b.x_ho, b.y_ho, do_update=False)
         stress = run_eval(b.x_st, b.y_st, do_update=False)
+        test = run_eval(b.x_te, b.y_te, do_update=False)
         nodes = node_count(learner.code)
         obj = objective(train, hold, stress, nodes)
         if not isinstance(obj, (int, float)) or not math.isfinite(obj):
-            obj = SCORE_W_HOLD * hold + SCORE_W_STRESS * stress + SCORE_W_TRAIN * train
+            obj = SCORE_W_HOLD * hold + SCORE_W_STRESS * stress
         score = float(obj) + lam * nodes
-        ok = all(math.isfinite(v) for v in (train, hold, stress, score))
-        return EvalResult(ok, train, hold, stress, nodes, score, None if ok else "nan")
+        ok = all(math.isfinite(v) for v in (train, hold, stress, test, score))
+        return EvalResult(ok, train, hold, stress, test, nodes, score, None if ok else "nan")
     except Exception as exc:
-        return EvalResult(False, float("inf"), float("inf"), float("inf"), 0, float("inf"), str(exc))
+        return EvalResult(False, float("inf"), float("inf"), float("inf"), float("inf"), 0, float("inf"), str(exc))
 
 
 # ---------------------------
@@ -1450,12 +1817,49 @@ class FunctionLibrary:
     def snapshot(self) -> Dict:
         return {"funcs": [asdict(f) for f in self.funcs.values()]}
 
+    def merge(self, other: "FunctionLibrary"):
+        for name, func in other.funcs.items():
+            if name not in self.funcs:
+                self.funcs[name] = func
+            else:
+                new_name = f"{name}_{len(self.funcs) + 1}"
+                self.funcs[new_name] = LearnedFunc(name=new_name, expr=func.expr, trust=func.trust, uses=func.uses)
+
     @staticmethod
     def from_snapshot(s: Dict) -> "FunctionLibrary":
         lib = FunctionLibrary()
         for fd in s.get("funcs", []):
             lib.funcs[fd["name"]] = LearnedFunc(**fd)
         return lib
+
+
+@dataclass
+class LibraryRecord:
+    descriptor: TaskDescriptor
+    score_hold: float
+    snapshot: Dict[str, Any]
+
+
+class LibraryArchive:
+    def __init__(self, k: int = 2):
+        self.k = k
+        self.records: List[LibraryRecord] = []
+
+    def add(self, descriptor: TaskDescriptor, score_hold: float, lib: FunctionLibrary):
+        self.records.append(LibraryRecord(descriptor=descriptor, score_hold=score_hold, snapshot=lib.snapshot()))
+
+    def _distance(self, a: List[float], b: List[float]) -> float:
+        return math.sqrt(sum((ai - bi) ** 2 for ai, bi in zip(a, b)))
+
+    def select(self, descriptor: TaskDescriptor) -> List[FunctionLibrary]:
+        if not self.records:
+            return []
+        vec = descriptor.vector()
+        ranked = sorted(self.records, key=lambda r: (self._distance(vec, r.descriptor.vector()), r.score_hold))
+        libs = []
+        for rec in ranked[: self.k]:
+            libs.append(FunctionLibrary.from_snapshot(rec.snapshot))
+        return libs
 
 
 # ---------------------------
@@ -1489,6 +1893,30 @@ def induce_grammar(pool: List[Genome]):
             old = GRAMMAR_PROBS.get(k, 1.0)
             target = counts[k] / total * 100.0
             GRAMMAR_PROBS[k] = 0.8 * old + 0.2 * target
+
+
+def extract_return_expr(stmts: List[str]) -> Optional[str]:
+    for stmt in reversed(stmts):
+        s = stmt.strip()
+        if s.startswith("return "):
+            return s[len("return ") :].strip()
+    return None
+
+
+def inject_helpers_into_statements(rng: random.Random, stmts: List[str], library: FunctionLibrary) -> List[str]:
+    if not library.funcs:
+        return stmts
+    new_stmts = []
+    injected = False
+    for stmt in stmts:
+        if not injected and stmt.strip().startswith("return "):
+            expr = stmt.strip()[len("return ") :].strip()
+            new_expr, helper_name = library.maybe_inject(rng, expr)
+            if helper_name:
+                stmt = f"return {new_expr}"
+                injected = True
+        new_stmts.append(stmt)
+    return new_stmts
 
 
 # ---------------------------
@@ -1561,6 +1989,149 @@ class MetaCognitiveEngine:
 
 
 # ---------------------------
+# L1 RuleDSL Meta-optimizer
+# ---------------------------
+
+@dataclass
+class ControlPacket:
+    operator_probs: Dict[str, float]
+    mutation_rate: float
+    mutation_magnitude: float
+    crossover_rate: float
+    branch_insert_rate: float
+    novelty_weight: float
+    acceptance_margin: float
+    patience: int
+    curriculum_bias: float
+
+
+@dataclass
+class RuleDSL:
+    instructions: List[Dict[str, Any]]
+    rid: str = ""
+
+    @staticmethod
+    def seed(rng: random.Random, n_inputs: int, n_regs: int = 8, steps: int = 12) -> "RuleDSL":
+        ops = ["LOADF", "LOADC", "ADD", "MUL", "TANH", "CLAMP"]
+        instr = []
+        for _ in range(steps):
+            op = rng.choice(ops)
+            instr.append({
+                "op": op,
+                "a": rng.randrange(n_regs),
+                "b": rng.randrange(max(1, n_inputs)),
+                "c": rng.uniform(-1.0, 1.0),
+            })
+        rid = sha256(json.dumps(instr, sort_keys=True))[:12]
+        return RuleDSL(instructions=instr, rid=rid)
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {"instructions": self.instructions, "rid": self.rid}
+
+    @staticmethod
+    def from_snapshot(s: Dict[str, Any]) -> "RuleDSL":
+        return RuleDSL(instructions=list(s.get("instructions", [])), rid=s.get("rid", ""))
+
+    def hash(self) -> str:
+        if not self.rid:
+            self.rid = sha256(json.dumps(self.instructions, sort_keys=True))[:12]
+        return self.rid
+
+    def validate(self, n_inputs: int, n_regs: int = 8, max_steps: int = 32) -> bool:
+        if len(self.instructions) > max_steps:
+            return False
+        allowed = {"LOADF", "LOADC", "ADD", "MUL", "TANH", "CLAMP"}
+        for ins in self.instructions:
+            if ins.get("op") not in allowed:
+                return False
+            a = int(ins.get("a", 0))
+            if a < 0 or a >= n_regs:
+                return False
+            b = int(ins.get("b", 0))
+            if b < 0 or b > max(n_inputs, n_regs):
+                return False
+        return True
+
+    def act(self, descriptor: TaskDescriptor, stats: Dict[str, float]) -> ControlPacket:
+        features = descriptor.vector() + [
+            stats.get("delta_best", 0.0),
+            stats.get("auc_window", 0.0),
+            stats.get("timeout_rate", 0.0),
+            stats.get("avg_nodes", 0.0),
+            stats.get("novelty", 0.0),
+        ]
+        regs = [0.0 for _ in range(8)]
+        for ins in self.instructions:
+            op = ins.get("op")
+            a = int(ins.get("a", 0))
+            b = int(ins.get("b", 0))
+            c = float(ins.get("c", 0.0))
+            if op == "LOADF":
+                regs[a] = features[b % len(features)]
+            elif op == "LOADC":
+                regs[a] = c
+            elif op == "ADD":
+                regs[a] = regs[a] + regs[b % len(regs)]
+            elif op == "MUL":
+                regs[a] = regs[a] * regs[b % len(regs)]
+            elif op == "TANH":
+                regs[a] = math.tanh(regs[a])
+            elif op == "CLAMP":
+                regs[a] = clamp(regs[a], -1.0, 1.0)
+        mutation_rate = clamp(0.4 + regs[0], 0.05, 0.98)
+        mutation_magnitude = clamp(0.2 + abs(regs[1]), 0.05, 1.0)
+        crossover_rate = clamp(0.2 + regs[2], 0.0, 0.9)
+        branch_insert_rate = clamp(0.1 + abs(regs[3]), 0.0, 0.6)
+        novelty_weight = clamp(0.2 + regs[4], 0.0, 1.0)
+        acceptance_margin = clamp(abs(regs[5]) * 0.01, 0.0, 0.05)
+        patience = int(clamp(abs(regs[6]) * 10.0, 1.0, 20.0))
+        curriculum_bias = clamp(regs[7], -1.0, 1.0)
+        operator_probs = {op: clamp(OP_WEIGHT_INIT.get(op, 1.0) * (1.0 + regs[2]), 0.1, 8.0) for op in OPERATORS}
+        return ControlPacket(
+            operator_probs=operator_probs,
+            mutation_rate=mutation_rate,
+            mutation_magnitude=mutation_magnitude,
+            crossover_rate=crossover_rate,
+            branch_insert_rate=branch_insert_rate,
+            novelty_weight=novelty_weight,
+            acceptance_margin=acceptance_margin,
+            patience=patience,
+            curriculum_bias=curriculum_bias,
+        )
+
+
+class RulePatcher:
+    @staticmethod
+    def propose(rng: random.Random, rule: RuleDSL, n_inputs: int) -> RuleDSL:
+        instr = [dict(i) for i in rule.instructions]
+        if not instr:
+            return RuleDSL.seed(rng, n_inputs)
+        choice = rng.random()
+        if choice < 0.4 and instr:
+            idx = rng.randrange(len(instr))
+            instr[idx]["c"] = float(instr[idx].get("c", 0.0)) + rng.uniform(-0.5, 0.5)
+        elif choice < 0.7 and instr:
+            idx = rng.randrange(len(instr))
+            instr[idx]["op"] = rng.choice(["LOADF", "LOADC", "ADD", "MUL", "TANH", "CLAMP"])
+        else:
+            instr.append({
+                "op": rng.choice(["LOADF", "LOADC", "ADD", "MUL", "TANH", "CLAMP"]),
+                "a": rng.randrange(8),
+                "b": rng.randrange(max(1, n_inputs)),
+                "c": rng.uniform(-1.0, 1.0),
+            })
+        patched = RuleDSL(instr)
+        patched.hash()
+        return patched
+
+
+def rule_is_deterministic(rule: RuleDSL, descriptor: TaskDescriptor, stats: Dict[str, float]) -> bool:
+    a = asdict(rule.act(descriptor, stats))
+    b = asdict(rule.act(descriptor, stats))
+    return a == b
+
+
+# ---------------------------
 # Universe / Multiverse
 # ---------------------------
 
@@ -1572,25 +2143,48 @@ class Universe:
     pool: List[Genome]
     library: FunctionLibrary
     discriminator: ProblemGenerator = field(default_factory=ProblemGenerator)
+    eval_mode: str = "solver"
     best: Optional[Genome] = None
     best_score: float = float("inf")
+    best_train: float = float("inf")
     best_hold: float = float("inf")
     best_stress: float = float("inf")
+    best_test: float = float("inf")
     history: List[Dict] = field(default_factory=list)
 
-    def step(self, gen: int, task: TaskSpec, pop_size: int) -> Dict:
+    def step(self, gen: int, task: TaskSpec, pop_size: int, batch: Batch, policy_controls: Optional[Any] = None) -> Dict:
         rng = random.Random(self.seed + gen * 1009)
-        batch = sample_batch(rng, task)
         if batch is None:
             self.pool = [seed_genome(rng) for _ in range(pop_size)]
             return {"gen": gen, "accepted": False, "reason": "no_batch"}
 
         helper_env = self.library.get_helpers()
+        if isinstance(policy_controls, ControlPacket):
+            self.meta.mutation_rate = clamp(policy_controls.mutation_rate * policy_controls.mutation_magnitude, 0.05, 0.98)
+            self.meta.crossover_rate = clamp(policy_controls.crossover_rate, 0.0, 0.95)
+            novelty_weight = clamp(policy_controls.novelty_weight, 0.0, 1.0)
+            branch_rate = clamp(policy_controls.branch_insert_rate, 0.0, 0.6)
+            for k, v in policy_controls.operator_probs.items():
+                if k in self.meta.op_weights:
+                    self.meta.op_weights[k] = clamp(float(v), 0.1, 8.0)
+        elif policy_controls:
+            self.meta.mutation_rate = clamp(policy_controls.get("mutation_rate", self.meta.mutation_rate), 0.05, 0.98)
+            self.meta.crossover_rate = clamp(policy_controls.get("crossover_rate", self.meta.crossover_rate), 0.0, 0.95)
+            novelty_weight = clamp(policy_controls.get("novelty_weight", 0.0), 0.0, 1.0)
+            branch_rate = clamp(policy_controls.get("branch_insert_rate", 0.0), 0.0, 0.6)
+            if isinstance(policy_controls.get("op_weights"), dict):
+                for k, v in policy_controls["op_weights"].items():
+                    if k in self.meta.op_weights:
+                        self.meta.op_weights[k] = clamp(float(v), 0.1, 8.0)
+        else:
+            novelty_weight = 0.0
+            branch_rate = 0.0
 
         scored: List[Tuple[Genome, EvalResult]] = []
         all_results: List[Tuple[Genome, EvalResult]] = []
         for g in self.pool:
-            res = evaluate(g, batch, task.name, self.meta.complexity_lambda, extra_env=helper_env)
+            validator = validate_program if self.eval_mode == "program" else validate_code
+            res = evaluate(g, batch, task.name, self.meta.complexity_lambda, extra_env=helper_env, validator=validator)
             all_results.append((g, res))
             if res.ok:
                 scored.append((g, res))
@@ -1603,10 +2197,19 @@ class Universe:
             return {"gen": gen, "accepted": False, "reason": "reseed"}
 
         scored.sort(key=lambda t: t[1].score)
+        timeout_rate = 1.0 - (len(scored) / max(1, len(all_results)))
+        avg_nodes = sum(r.nodes for _, r in scored) / max(1, len(scored))
 
         # MAP-Elites add
         best_g0, best_res0 = scored[0]
         MAP_ELITES.add(best_g0, best_res0.score)
+
+        for g, _ in scored[:3]:
+            expr = extract_return_expr(g.statements)
+            if expr:
+                adopted = self.library.maybe_adopt(rng, expr, threshold=0.3)
+                if adopted:
+                    break
 
         # selection via strategy
         sel_ctx = {
@@ -1660,10 +2263,16 @@ class Universe:
                         new_stmts = OPERATORS[op](rng, new_stmts)
                     op_tag = f"mut:{op}"
 
+            if rng.random() < branch_rate:
+                extra = rng.choice(seed_genome(rng).statements)
+                new_stmts = list(new_stmts) + [extra]
+                op_tag = f"{op_tag}|branch"
+
+            new_stmts = inject_helpers_into_statements(rng, list(new_stmts), self.library)
             candidates.append(Genome(statements=new_stmts, parents=[parent.gid], op_tag=op_tag))
 
         # surrogate ranking
-        with_pred = [(c, SURROGATE.predict(c.code)) for c in candidates]
+        with_pred = [(c, SURROGATE.predict(c.code) + novelty_weight * rng.random()) for c in candidates]
         with_pred.sort(key=lambda x: x[1])
         selected_children = [c for c, _ in with_pred[:needed]]
 
@@ -1680,23 +2289,35 @@ class Universe:
         # acceptance update
         best_g, best_res = scored[0]
         old_score = self.best_score
-        accepted = best_res.score < self.best_score - 1e-9
+        accept_margin = 1e-9
+        if isinstance(policy_controls, ControlPacket):
+            accept_margin = max(accept_margin, policy_controls.acceptance_margin)
+        accepted = best_res.score < self.best_score - accept_margin
         if accepted:
             self.best = best_g
             self.best_score = best_res.score
+            self.best_train = best_res.train
             self.best_hold = best_res.hold
             self.best_stress = best_res.stress
+            self.best_test = best_res.test
 
         op_used = best_g.op_tag.split(":")[1].split("|")[0] if ":" in best_g.op_tag else "unknown"
         self.meta.update(op_used, self.best_score - old_score, accepted)
+        if isinstance(policy_controls, ControlPacket) and self.meta.stuck_counter > policy_controls.patience:
+            self.meta.epsilon_explore = clamp(self.meta.epsilon_explore + 0.05, 0.05, 0.5)
 
         log = {
             "gen": gen,
             "accepted": accepted,
             "score": self.best_score,
+            "train": self.best_train,
             "hold": self.best_hold,
             "stress": self.best_stress,
+            "test": self.best_test,
             "code": self.best.code if self.best else "none",
+            "novelty_weight": novelty_weight,
+            "timeout_rate": timeout_rate,
+            "avg_nodes": avg_nodes,
         }
         self.history.append(log)
         if gen % 5 == 0:
@@ -1710,11 +2331,14 @@ class Universe:
             "meta": asdict(self.meta),
             "best": asdict(self.best) if self.best else None,
             "best_score": self.best_score,
+            "best_train": self.best_train,
             "best_hold": self.best_hold,
             "best_stress": self.best_stress,
+            "best_test": self.best_test,
             "pool": [asdict(g) for g in self.pool[:20]],
             "library": self.library.snapshot(),
             "history": self.history[-50:],
+            "eval_mode": self.eval_mode,
         }
 
     @staticmethod
@@ -1730,9 +2354,12 @@ class Universe:
         if s.get("best"):
             u.best = Genome(**s["best"])
         u.best_score = s.get("best_score", float("inf"))
+        u.best_train = s.get("best_train", float("inf"))
         u.best_hold = s.get("best_hold", float("inf"))
         u.best_stress = s.get("best_stress", float("inf"))
+        u.best_test = s.get("best_test", float("inf"))
         u.history = s.get("history", [])
+        u.eval_mode = s.get("eval_mode", "solver")
         return u
 
 
@@ -1749,11 +2376,11 @@ class UniverseLearner:
     best_score: float = float("inf")
     best_hold: float = float("inf")
     best_stress: float = float("inf")
+    best_test: float = float("inf")
     history: List[Dict] = field(default_factory=list)
 
-    def step(self, gen: int, task: TaskSpec, pop_size: int) -> Dict:
+    def step(self, gen: int, task: TaskSpec, pop_size: int, batch: Batch) -> Dict:
         rng = random.Random(self.seed + gen * 1009)
-        batch = sample_batch(rng, task)
         if batch is None:
             hint = TaskDetective.detect_pattern(batch)
             self.pool = [seed_learner_genome(rng, hint) for _ in range(pop_size)]
@@ -1838,6 +2465,7 @@ class UniverseLearner:
             self.best_score = best_res.score
             self.best_hold = best_res.hold
             self.best_stress = best_res.stress
+            self.best_test = best_res.test
 
         op_used = best_g.op_tag.split(":")[1].split("|")[0] if ":" in best_g.op_tag else "unknown"
         self.meta.update(op_used, self.best_score - old_score, accepted)
@@ -1848,6 +2476,7 @@ class UniverseLearner:
             "score": self.best_score,
             "hold": self.best_hold,
             "stress": self.best_stress,
+            "test": self.best_test,
             "code": self.best.code if self.best else "none",
         }
         self.history.append(log)
@@ -1864,6 +2493,7 @@ class UniverseLearner:
             "best_score": self.best_score,
             "best_hold": self.best_hold,
             "best_stress": self.best_stress,
+            "best_test": self.best_test,
             "pool": [asdict(g) for g in self.pool[:20]],
             "library": self.library.snapshot(),
             "history": self.history[-50:],
@@ -1884,6 +2514,7 @@ class UniverseLearner:
         u.best_score = s.get("best_score", float("inf"))
         u.best_hold = s.get("best_hold", float("inf"))
         u.best_stress = s.get("best_stress", float("inf"))
+        u.best_test = s.get("best_test", float("inf"))
         u.history = s.get("history", [])
         return u
 
@@ -1903,6 +2534,7 @@ class GlobalState:
     selected_uid: int = 0
     generations_done: int = 0
     mode: str = "solver"
+    rule_dsl: Optional[Dict[str, Any]] = None
 
 STATE_DIR = Path(".rsi_state")
 
@@ -1953,8 +2585,11 @@ def run_multiverse(
     resume: bool = False,
     save_every: int = 5,
     mode: str = "solver",
+    freeze_eval: bool = True,
 ) -> GlobalState:
     safe_mkdir(STATE_DIR)
+    logger = RunLogger(STATE_DIR / "run_log.jsonl", append=resume)
+    task.ensure_descriptor()
 
     if resume and (gs0 := load_state()):
         mode = gs0.mode
@@ -1964,7 +2599,7 @@ def run_multiverse(
             us = [Universe.from_snapshot(s) for s in gs0.universes]
         start = gs0.generations_done
     else:
-        b0 = sample_batch(random.Random(seed), task)
+        b0 = get_task_batch(task, seed, freeze_eval=freeze_eval)
         hint = TaskDetective.detect_pattern(b0)
         if hint:
             print(f"[Detective] Detected pattern: {hint}. Injecting smart seeds.")
@@ -1980,6 +2615,7 @@ def run_multiverse(
                 for i in range(n_univ)
             ]
         else:
+            eval_mode = "program" if mode == "program" else "solver"
             us = [
                 Universe(
                     uid=i,
@@ -1987,19 +2623,51 @@ def run_multiverse(
                     meta=MetaState(),
                     pool=[seed_genome(random.Random(seed + i), hint) for _ in range(pop)],
                     library=FunctionLibrary(),
+                    eval_mode=eval_mode,
                 )
                 for i in range(n_univ)
             ]
         start = 0
 
     for gen in range(start, start + gens):
+        start_ms = now_ms()
+        batch = get_task_batch(task, seed, freeze_eval=freeze_eval)
         for u in us:
-            u.step(gen, task, pop)
+            if mode == "learner":
+                u.step(gen, task, pop, batch)
+            else:
+                u.step(gen, task, pop, batch)
 
         us.sort(key=lambda u: u.best_score)
         best = us[0]
+        runtime_ms = now_ms() - start_ms
+        best_code = best.best.code if best.best else "none"
+        solver_hash = sha256(best_code)
+        novelty = 1.0 if solver_hash not in logger.seen_hashes else 0.0
+        logger.seen_hashes.add(solver_hash)
+        accepted = bool(best.history[-1]["accepted"]) if best.history else False
+        logger.log(
+            gen=gen,
+            task_id=task.name,
+            mode=mode,
+            solver_hash=solver_hash,
+            rule_hash="baseline",
+            score_train=getattr(best, "best_train", float("inf")),
+            score_hold=best.best_hold,
+            score_stress=best.best_stress,
+            score_test=getattr(best, "best_test", float("inf")),
+            runtime_ms=runtime_ms,
+            nodes=node_count(best_code),
+            depth=ast_depth(best_code),
+            accepted=accepted,
+            novelty=novelty,
+            timeout_rate=best.history[-1].get("timeout_rate", 0.0) if best.history else 0.0,
+            control_packet={},
+            meta_policy_params={},
+            task_descriptor=task.descriptor.snapshot() if task.descriptor else None,
+        )
         print(
-            f"[Gen {gen + 1:4d}] Score: {best.best_score:.4f} | Hold: {best.best_hold:.4f} | Stress: {best.best_stress:.4f} | "
+            f"[Gen {gen + 1:4d}] Score: {best.best_score:.4f} | Hold: {best.best_hold:.4f} | Stress: {best.best_stress:.4f} | Test: {best.best_test:.4f} | "
             f"{(best.best.code if best.best else 'none')}"
         )
 
@@ -2030,6 +2698,356 @@ def run_multiverse(
     )
     save_state(gs)
     return gs
+
+
+def policy_stats_from_history(history: List[Dict[str, Any]], window: int = 5) -> Dict[str, float]:
+    if not history:
+        return {"delta_best": 0.0, "auc_window": 0.0, "timeout_rate": 0.0, "avg_nodes": 0.0, "novelty": 0.0}
+    holds = [h.get("hold", 0.0) for h in history]
+    recent = holds[-window:] if len(holds) >= window else holds
+    auc_window = sum(recent) / max(1, len(recent))
+    if len(holds) >= window:
+        delta_best = holds[-1] - holds[-window]
+    else:
+        delta_best = holds[-1] - holds[0]
+    timeout_rate = history[-1].get("timeout_rate", 0.0)
+    avg_nodes = history[-1].get("avg_nodes", 0.0)
+    return {
+        "delta_best": delta_best,
+        "auc_window": auc_window,
+        "timeout_rate": timeout_rate,
+        "avg_nodes": avg_nodes,
+        "novelty": history[-1].get("novelty_weight", 0.0),
+    }
+
+
+def run_rule_episode(
+    seed: int,
+    task: TaskSpec,
+    rule: RuleDSL,
+    gens: int,
+    pop: int,
+    n_univ: int,
+    freeze_eval: bool,
+    library_archive: LibraryArchive,
+    logger: Optional[RunLogger],
+    mode: str,
+    update_archive: bool = True,
+    eval_mode: str = "solver",
+) -> Tuple[List[Dict[str, Any]], Universe]:
+    batch = get_task_batch(task, seed, freeze_eval=freeze_eval)
+    hint = TaskDetective.detect_pattern(batch)
+    descriptor = task.ensure_descriptor()
+    base_lib = FunctionLibrary()
+    for lib in library_archive.select(descriptor):
+        base_lib.merge(lib)
+    universes = [
+        Universe(
+            uid=i,
+            seed=seed + i * 9973,
+            meta=MetaState(),
+            pool=[seed_genome(random.Random(seed + i), hint) for _ in range(pop)],
+            library=FunctionLibrary.from_snapshot(base_lib.snapshot()),
+            eval_mode=eval_mode,
+        )
+        for i in range(n_univ)
+    ]
+    for gen in range(gens):
+        start_ms = now_ms()
+        stats = policy_stats_from_history(universes[0].history)
+        controls = rule.act(descriptor, stats)
+        for u in universes:
+            u.step(gen, task, pop, batch, policy_controls=controls)
+        universes.sort(key=lambda u: u.best_score)
+        best = universes[0]
+        if logger:
+            best_code = best.best.code if best.best else "none"
+            solver_hash = sha256(best_code)
+            novelty = 1.0 if solver_hash not in logger.seen_hashes else 0.0
+            logger.seen_hashes.add(solver_hash)
+            logger.log(
+                gen=gen,
+                task_id=task.name,
+                mode=mode,
+                solver_hash=solver_hash,
+                rule_hash=rule.hash(),
+                score_train=best.best_train,
+                score_hold=best.best_hold,
+                score_stress=best.best_stress,
+                score_test=best.best_test,
+                runtime_ms=now_ms() - start_ms,
+                nodes=node_count(best_code),
+                depth=ast_depth(best_code),
+                accepted=bool(best.history[-1]["accepted"]) if best.history else False,
+                novelty=novelty,
+                timeout_rate=best.history[-1].get("timeout_rate", 0.0) if best.history else 0.0,
+                control_packet=asdict(controls),
+                meta_policy_params={"rule_dsl": rule.snapshot()},
+                task_descriptor=descriptor.snapshot(),
+            )
+    universes.sort(key=lambda u: u.best_score)
+    best = universes[0]
+    if update_archive:
+        library_archive.add(descriptor, best.best_hold, best.library)
+    return best.history, best
+
+
+def compute_transfer_metrics(history: List[Dict[str, Any]], window: int) -> Dict[str, float]:
+    if not history:
+        return {"auc": float("inf"), "regret": float("inf"), "gap": float("inf"), "recovery_time": float("inf")}
+    holds = [h.get("hold", float("inf")) for h in history[:window]]
+    stress = [h.get("stress", float("inf")) for h in history[:window]]
+    combined = [SCORE_W_HOLD * h + SCORE_W_STRESS * s for h, s in zip(holds, stress)]
+    tests = [h.get("test", float("inf")) for h in history[:window]]
+    auc = sum(combined) / max(1, len(combined))
+    best = min(combined)
+    regret = sum(h - best for h in combined) / max(1, len(combined))
+    gap = (tests[-1] - combined[-1]) if combined and tests else float("inf")
+    threshold = best * 1.1 if math.isfinite(best) else float("inf")
+    recovery_time = float("inf")
+    for i, h in enumerate(combined):
+        if h <= threshold:
+            recovery_time = i + 1
+            break
+    return {"auc": auc, "regret": regret, "gap": gap, "recovery_time": recovery_time}
+
+
+def run_meta_meta(
+    seed: int,
+    episodes: int,
+    gens_per_episode: int,
+    pop: int,
+    n_univ: int,
+    freeze_eval: bool,
+    state_dir: Path,
+    eval_every: int,
+    few_shot_gens: int,
+) -> None:
+    rng = random.Random(seed)
+    meta_train, meta_test = split_meta_tasks(seed)
+    n_inputs = len(TaskSpec().ensure_descriptor().vector()) + 5
+    current_rule = RuleDSL.seed(rng, n_inputs=n_inputs)
+    archive = LibraryArchive(k=2)
+    logger = RunLogger(state_dir / "run_log.jsonl")
+    round_logger = RoundLogger(state_dir / "rsi_round_log.jsonl")
+
+    for episode in range(episodes):
+        neutral_stats = {"delta_best": 0.0, "auc_window": 0.0, "timeout_rate": 0.0, "avg_nodes": 0.0, "novelty": 0.0}
+        weights = []
+        for t in meta_train:
+            control = current_rule.act(t.ensure_descriptor(), neutral_stats)
+            weights.append(max(0.1, 1.0 + control.curriculum_bias))
+        task_batch = []
+        for _ in range(min(2, len(meta_train))):
+            pick = rng.random() * sum(weights)
+            acc = 0.0
+            for t, w in zip(meta_train, weights):
+                acc += w
+                if pick <= acc:
+                    task_batch.append(t)
+                    break
+        meta_train_scores = []
+        for task in task_batch:
+            history, _ = run_rule_episode(
+                seed + episode * 31,
+                task,
+                current_rule,
+                gens_per_episode,
+                pop,
+                n_univ,
+                freeze_eval,
+                archive,
+                logger,
+                mode="meta-train",
+                update_archive=True,
+            )
+            meta_train_scores.append(compute_transfer_metrics(history, window=min(few_shot_gens, len(history)))["auc"])
+        meta_train_reward = sum(meta_train_scores) / max(1, len(meta_train_scores))
+
+        meta_test_transfer_score = float("inf")
+        avg_regret = float("inf")
+        avg_recovery = float("inf")
+        avg_gap = float("inf")
+        rule_hash_before = current_rule.hash()
+        patch_proposed = (episode + 1) % eval_every == 0
+        valid_patch = False
+        accept = False
+        if patch_proposed:
+            patched_rule = RulePatcher.propose(rng, current_rule, n_inputs=n_inputs)
+            valid_patch = patched_rule.validate(n_inputs=n_inputs)
+            deterministic = rule_is_deterministic(
+                patched_rule,
+                TaskSpec().ensure_descriptor(),
+                {"delta_best": 0.0, "auc_window": 0.0, "timeout_rate": 0.0, "avg_nodes": 0.0, "novelty": 0.0},
+            )
+            valid_patch = valid_patch and deterministic
+            meta_test_scores = []
+            meta_test_metrics = []
+            if valid_patch:
+                for task_test in meta_test:
+                    hist, _ = run_rule_episode(
+                        seed + episode * 73,
+                        task_test,
+                        patched_rule,
+                        few_shot_gens,
+                        pop,
+                        n_univ,
+                        freeze_eval,
+                        archive,
+                        logger,
+                        mode="meta-test",
+                        update_archive=False,
+                    )
+                    metrics = compute_transfer_metrics(hist, window=few_shot_gens)
+                    meta_test_scores.append(metrics["auc"])
+                    meta_test_metrics.append(metrics)
+            meta_test_transfer_score = sum(meta_test_scores) / max(1, len(meta_test_scores)) if meta_test_scores else float("inf")
+            accept = valid_patch and (meta_test_transfer_score < meta_train_reward - 1e-6)
+            if accept:
+                current_rule = patched_rule
+            avg_regret = sum(m["regret"] for m in meta_test_metrics) / max(1, len(meta_test_metrics)) if meta_test_metrics else float("inf")
+            avg_recovery = sum(m["recovery_time"] for m in meta_test_metrics) / max(1, len(meta_test_metrics)) if meta_test_metrics else float("inf")
+            avg_gap = sum(m["gap"] for m in meta_test_metrics) / max(1, len(meta_test_metrics)) if meta_test_metrics else float("inf")
+
+        round_logger.log({
+            "round": episode,
+            "meta_train_reward": meta_train_reward,
+            "meta_test_transfer_score": meta_test_transfer_score,
+            "AUC_N": meta_test_transfer_score,
+            "regret": avg_regret,
+            "recovery_time": avg_recovery,
+            "generalization_gap": avg_gap,
+            "rule_patch_proposed": patch_proposed,
+            "rule_patch_applied": valid_patch,
+            "rule_patch_accepted": accept,
+            "rule_patch_rolled_back": bool(valid_patch and not accept),
+            "rule_hash_before": rule_hash_before,
+            "rule_hash_after": current_rule.hash(),
+        })
+
+    final_state = GlobalState(
+        version="RSI_EXTENDED_meta_meta",
+        created_ms=now_ms(),
+        updated_ms=now_ms(),
+        base_seed=seed,
+        task={"meta_train": [asdict(t) for t in meta_train], "meta_test": [asdict(t) for t in meta_test]},
+        universes=[],
+        selected_uid=0,
+        generations_done=episodes,
+        mode="meta-meta",
+        rule_dsl=current_rule.snapshot(),
+    )
+    write_json(state_dir / "state.json", asdict(final_state))
+
+
+def run_task_switch(
+    seed: int,
+    task_a: TaskSpec,
+    task_b: TaskSpec,
+    gens_a: int,
+    gens_b: int,
+    pop: int,
+    n_univ: int,
+    freeze_eval: bool,
+    state_dir: Path,
+) -> Dict[str, Any]:
+    rng = random.Random(seed)
+    n_inputs = len(TaskSpec().ensure_descriptor().vector()) + 5
+    transfer_rule = RuleDSL.seed(rng, n_inputs=n_inputs)
+    archive = LibraryArchive(k=2)
+    logger = RunLogger(state_dir / "run_log.jsonl")
+    baseline = RuleDSL.seed(random.Random(seed + 999), n_inputs=n_inputs)
+
+    history_a, _ = run_rule_episode(
+        seed,
+        task_a,
+        transfer_rule,
+        gens_a,
+        pop,
+        n_univ,
+        freeze_eval,
+        archive,
+        logger,
+        mode="switch-train",
+        update_archive=True,
+    )
+    history_transfer, _ = run_rule_episode(
+        seed + 1,
+        task_b,
+        transfer_rule,
+        gens_b,
+        pop,
+        n_univ,
+        freeze_eval,
+        archive,
+        logger,
+        mode="switch-transfer",
+        update_archive=False,
+    )
+    history_baseline, _ = run_rule_episode(
+        seed + 2,
+        task_b,
+        baseline,
+        gens_b,
+        pop,
+        n_univ,
+        freeze_eval,
+        LibraryArchive(k=0),
+        logger,
+        mode="switch-baseline",
+        update_archive=False,
+    )
+    metrics_transfer = compute_transfer_metrics(history_transfer, window=gens_b)
+    metrics_baseline = compute_transfer_metrics(history_baseline, window=gens_b)
+    delta_auc = metrics_baseline["auc"] - metrics_transfer["auc"]
+    delta_recovery = metrics_baseline["recovery_time"] - metrics_transfer["recovery_time"]
+    return {
+        "transfer": metrics_transfer,
+        "baseline": metrics_baseline,
+        "delta_auc": delta_auc,
+        "delta_recovery_time": delta_recovery,
+    }
+
+
+def generate_report(path: Path, few_shot_gens: int) -> Dict[str, Any]:
+    if not path.exists():
+        return {"error": "run_log.jsonl not found"}
+    records = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+    by_task: Dict[str, List[Dict[str, Any]]] = {}
+    for rec in records:
+        key = f"{rec['task_id']}::{rec.get('mode', 'unknown')}"
+        by_task.setdefault(key, []).append(rec)
+    report = {"tasks": {}, "few_shot_gens": few_shot_gens}
+    for key, recs in by_task.items():
+        recs.sort(key=lambda r: r["gen"])
+        holds = [r["score_hold"] for r in recs[:few_shot_gens]]
+        stress = [r["score_stress"] for r in recs[:few_shot_gens]]
+        combined = [SCORE_W_HOLD * h + SCORE_W_STRESS * s for h, s in zip(holds, stress)]
+        tests = [r["score_test"] for r in recs[:few_shot_gens]]
+        auc = sum(combined) / max(1, len(combined))
+        best = min(combined) if combined else float("inf")
+        regret = sum(h - best for h in combined) / max(1, len(combined))
+        gap = (tests[-1] - combined[-1]) if combined and tests else float("inf")
+        threshold = best * 1.1 if math.isfinite(best) else float("inf")
+        recovery_time = float("inf")
+        for i, h in enumerate(combined):
+            if h <= threshold:
+                recovery_time = i + 1
+                break
+        few_shot_delta = (combined[0] - combined[-1]) if len(combined) > 1 else 0.0
+        report["tasks"][key] = {
+            "auc": auc,
+            "regret": regret,
+            "generalization_gap": gap,
+            "recovery_time": recovery_time,
+            "few_shot_delta": few_shot_delta,
+        }
+    return report
 
 
 # ---------------------------
@@ -2296,13 +3314,37 @@ def run_deep_autopatch(levels: List[int], candidates: int = 4, apply: bool = Fal
 
     return {"improved": False, "baseline": baseline, "results": results}
 
-def run_rsi_loop(gens_per_round: int, rounds: int, levels: List[int], pop: int, n_univ: int, mode: str):
+def run_rsi_loop(
+    gens_per_round: int,
+    rounds: int,
+    levels: List[int],
+    pop: int,
+    n_univ: int,
+    mode: str,
+    freeze_eval: bool = True,
+    meta_meta: bool = False,
+):
     task = TaskSpec()
     seed = int(time.time()) % 100000
+    if meta_meta:
+        run_meta_meta(
+            seed=seed,
+            episodes=rounds,
+            gens_per_episode=gens_per_round,
+            pop=pop,
+            n_univ=n_univ,
+            freeze_eval=freeze_eval,
+            state_dir=STATE_DIR,
+            eval_every=1,
+            few_shot_gens=max(3, gens_per_round // 2),
+        )
+        print(f"\n[RSI LOOP COMPLETE] {rounds} meta-meta rounds finished")
+        return
+
     for r in range(rounds):
         print(f"\n{'='*60}\n[RSI ROUND {r+1}/{rounds}]\n{'='*60}")
         print(f"[EVOLVE] {gens_per_round} generations...")
-        run_multiverse(seed, task, gens_per_round, pop, n_univ, resume=(r > 0), mode=mode)
+        run_multiverse(seed, task, gens_per_round, pop, n_univ, resume=(r > 0), mode=mode, freeze_eval=freeze_eval)
         print(f"[AUTOPATCH] Trying L{levels}...")
         result = run_deep_autopatch(levels, candidates=4, apply=True, mode=mode)
         if result.get("applied"):
@@ -2339,7 +3381,17 @@ def cmd_evolve(args):
     global STATE_DIR
     STATE_DIR = Path(args.state_dir)
     resume = bool(args.resume) and (not args.fresh)
-    run_multiverse(args.seed, TaskSpec(name=args.task), args.generations, args.population, args.universes, resume=resume, save_every=args.save_every, mode="solver")
+    run_multiverse(
+        args.seed,
+        TaskSpec(name=args.task),
+        args.generations,
+        args.population,
+        args.universes,
+        resume=resume,
+        save_every=args.save_every,
+        mode=args.mode,
+        freeze_eval=args.freeze_eval,
+    )
     print(f"\n[OK] State saved to {STATE_DIR / 'state.json'}")
     return 0
 
@@ -2347,7 +3399,17 @@ def cmd_learner_evolve(args):
     global STATE_DIR
     STATE_DIR = Path(args.state_dir)
     resume = bool(args.resume) and (not args.fresh)
-    run_multiverse(args.seed, TaskSpec(name=args.task), args.generations, args.population, args.universes, resume=resume, save_every=args.save_every, mode="learner")
+    run_multiverse(
+        args.seed,
+        TaskSpec(name=args.task),
+        args.generations,
+        args.population,
+        args.universes,
+        resume=resume,
+        save_every=args.save_every,
+        mode="learner",
+        freeze_eval=args.freeze_eval,
+    )
     print(f"\n[OK] State saved to {STATE_DIR / 'state.json'}")
     return 0
 
@@ -2366,7 +3428,7 @@ def cmd_best(args):
         else:
             g = Genome(**best)
         print(g.code)
-    print(f"Score: {u.get('best_score')} | Hold: {u.get('best_hold')} | Stress: {u.get('best_stress')}")
+    print(f"Score: {u.get('best_score')} | Hold: {u.get('best_hold')} | Stress: {u.get('best_stress')} | Test: {u.get('best_test')}")
     print(f"Generations: {gs.generations_done}")
     return 0
 
@@ -2383,7 +3445,56 @@ def cmd_rsi_loop(args):
     global STATE_DIR
     STATE_DIR = Path(args.state_dir)
     levels = [int(l) for l in args.levels.split(",") if l.strip()]
-    run_rsi_loop(args.generations, args.rounds, levels, args.population, args.universes, mode=args.mode)
+    run_rsi_loop(
+        args.generations,
+        args.rounds,
+        levels,
+        args.population,
+        args.universes,
+        mode=args.mode,
+        freeze_eval=args.freeze_eval,
+        meta_meta=args.meta_meta,
+    )
+    return 0
+
+def cmd_meta_meta(args):
+    global STATE_DIR
+    STATE_DIR = Path(args.state_dir)
+    run_meta_meta(
+        seed=args.seed,
+        episodes=args.episodes,
+        gens_per_episode=args.gens_per_episode,
+        pop=args.population,
+        n_univ=args.universes,
+        freeze_eval=args.freeze_eval,
+        state_dir=STATE_DIR,
+        eval_every=args.eval_every,
+        few_shot_gens=args.few_shot_gens,
+    )
+    return 0
+
+def cmd_task_switch(args):
+    global STATE_DIR
+    STATE_DIR = Path(args.state_dir)
+    result = run_task_switch(
+        seed=args.seed,
+        task_a=TaskSpec(name=args.task_a),
+        task_b=TaskSpec(name=args.task_b),
+        gens_a=args.gens_a,
+        gens_b=args.gens_b,
+        pop=args.population,
+        n_univ=args.universes,
+        freeze_eval=args.freeze_eval,
+        state_dir=STATE_DIR,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+def cmd_report(args):
+    global STATE_DIR
+    STATE_DIR = Path(args.state_dir)
+    report = generate_report(STATE_DIR / "run_log.jsonl", args.few_shot_gens)
+    print(json.dumps(report, indent=2))
     return 0
 
 def build_parser():
@@ -2403,6 +3514,8 @@ def build_parser():
     e.add_argument("--fresh", action="store_true")
     e.add_argument("--save-every", type=int, default=5)
     e.add_argument("--state-dir", default=".rsi_state")
+    e.add_argument("--freeze-eval", action=argparse.BooleanOptionalAction, default=True)
+    e.add_argument("--mode", default="solver", choices=["solver", "program"])
     e.set_defaults(fn=cmd_evolve)
 
     le = sub.add_parser("learner-evolve")
@@ -2415,6 +3528,7 @@ def build_parser():
     le.add_argument("--fresh", action="store_true")
     le.add_argument("--save-every", type=int, default=5)
     le.add_argument("--state-dir", default=".rsi_state")
+    le.add_argument("--freeze-eval", action=argparse.BooleanOptionalAction, default=True)
     le.set_defaults(fn=cmd_learner_evolve)
 
     b = sub.add_parser("best")
@@ -2436,8 +3550,39 @@ def build_parser():
     r.add_argument("--population", type=int, default=64)
     r.add_argument("--universes", type=int, default=2)
     r.add_argument("--state-dir", default=".rsi_state")
-    r.add_argument("--mode", default="solver", choices=["solver", "learner"])
+    r.add_argument("--mode", default="solver", choices=["solver", "learner", "program"])
+    r.add_argument("--freeze-eval", action=argparse.BooleanOptionalAction, default=True)
+    r.add_argument("--meta-meta", action="store_true")
     r.set_defaults(fn=cmd_rsi_loop)
+
+    mm = sub.add_parser("meta-meta")
+    mm.add_argument("--seed", type=int, default=1337)
+    mm.add_argument("--episodes", type=int, default=20)
+    mm.add_argument("--gens-per-episode", type=int, default=20)
+    mm.add_argument("--population", type=int, default=64)
+    mm.add_argument("--universes", type=int, default=2)
+    mm.add_argument("--state-dir", default=".rsi_state")
+    mm.add_argument("--freeze-eval", action=argparse.BooleanOptionalAction, default=True)
+    mm.add_argument("--eval-every", type=int, default=4)
+    mm.add_argument("--few-shot-gens", type=int, default=10)
+    mm.set_defaults(fn=cmd_meta_meta)
+
+    ts = sub.add_parser("task-switch")
+    ts.add_argument("--seed", type=int, default=1337)
+    ts.add_argument("--task-a", default="poly2")
+    ts.add_argument("--task-b", default="piecewise")
+    ts.add_argument("--gens-a", type=int, default=10)
+    ts.add_argument("--gens-b", type=int, default=10)
+    ts.add_argument("--population", type=int, default=64)
+    ts.add_argument("--universes", type=int, default=2)
+    ts.add_argument("--state-dir", default=".rsi_state")
+    ts.add_argument("--freeze-eval", action=argparse.BooleanOptionalAction, default=True)
+    ts.set_defaults(fn=cmd_task_switch)
+
+    rp = sub.add_parser("report")
+    rp.add_argument("--state-dir", default=".rsi_state")
+    rp.add_argument("--few-shot-gens", type=int, default=10)
+    rp.set_defaults(fn=cmd_report)
 
     return p
 
