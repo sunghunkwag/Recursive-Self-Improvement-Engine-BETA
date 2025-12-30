@@ -4768,10 +4768,33 @@ def run_rsi_loop(
         print(f"\n{'='*60}\n[RSI ROUND {r+1}/{rounds}]\n{'='*60}")
         print(f"[EVOLVE] {gens_per_round} generations...")
         run_multiverse(seed, task, gens_per_round, pop, n_univ, resume=(r > 0), mode=mode, freeze_eval=freeze_eval)
-        print(f"[AUTOPATCH] Trying L{levels}...")
-        result = run_deep_autopatch(levels, candidates=4, apply=True, mode=mode)
-        if result.get("applied"):
-            print("[RSI] Self-modified! Reloading...")
+        recent_scores = load_recent_scores(STATE_DIR / "run_log.jsonl", 5)
+        forced_applied = False
+        if is_300s_stagnation(recent_scores):
+            print("[STAGNATION] 300s plateau detected for >=5 gens. Forcing L1/L3 autopatch.")
+            forced = run_deep_autopatch([1, 3], candidates=4, apply=True, mode=mode)
+            forced_applied = bool(forced.get("applied"))
+            if forced_applied:
+                print("[RSI] Self-modified via forced L1/L3 patch.")
+            else:
+                print("[STAGNATION] Forced patch rejected. Launching meta-meta acceleration.")
+                run_meta_meta(
+                    seed=seed,
+                    episodes=1,
+                    gens_per_episode=gens_per_round,
+                    pop=pop,
+                    n_univ=n_univ,
+                    freeze_eval=freeze_eval,
+                    state_dir=STATE_DIR,
+                    eval_every=1,
+                    few_shot_gens=max(3, gens_per_round // 2),
+                )
+                print("[STAGNATION] Meta-meta episode completed.")
+        if not forced_applied:
+            print(f"[AUTOPATCH] Trying L{levels}...")
+            result = run_deep_autopatch(levels, candidates=4, apply=True, mode=mode)
+            if result.get("applied"):
+                print("[RSI] Self-modified! Reloading...")
 
     print(f"\n[RSI LOOP COMPLETE] {rounds} rounds finished")
 
