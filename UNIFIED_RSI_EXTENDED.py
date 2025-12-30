@@ -4737,7 +4737,16 @@ def run_deep_autopatch(levels: List[int], candidates: int = 4, apply: bool = Fal
 
     return {"improved": False, "baseline": baseline, "results": results}
 
-def run_rsi_loop(gens_per_round: int, rounds: int, levels: List[int], pop: int, n_univ: int, mode: str, freeze_eval: bool = True):
+def run_rsi_loop(
+    gens_per_round: int,
+    rounds: int,
+    levels: List[int],
+    pop: int,
+    n_univ: int,
+    mode: str,
+    freeze_eval: bool = True,
+    meta_meta: bool = False,
+):
     task = TaskSpec()
     seed = int(time.time()) % 100000
     if meta_meta:
@@ -4863,7 +4872,16 @@ def cmd_rsi_loop(args):
     global STATE_DIR
     STATE_DIR = Path(args.state_dir)
     levels = [int(l) for l in args.levels.split(",") if l.strip()]
-    run_rsi_loop(args.generations, args.rounds, levels, args.population, args.universes, mode=args.mode, freeze_eval=args.freeze_eval)
+    run_rsi_loop(
+        args.generations,
+        args.rounds,
+        levels,
+        args.population,
+        args.universes,
+        mode=args.mode,
+        freeze_eval=args.freeze_eval,
+        meta_meta=args.meta_meta,
+    )
     return 0
 
 def cmd_meta_meta(args):
@@ -4970,6 +4988,7 @@ def build_parser():
     r.add_argument("--state-dir", default=".rsi_state")
     r.add_argument("--mode", default="solver", choices=["solver", "learner", "algo"])
     r.add_argument("--freeze-eval", action=argparse.BooleanOptionalAction, default=True)
+    r.add_argument("--meta-meta", action="store_true", help="Run meta-meta loop instead of standard RSI rounds")
     r.set_defaults(fn=cmd_rsi_loop)
 
     mm = sub.add_parser("meta-meta")
