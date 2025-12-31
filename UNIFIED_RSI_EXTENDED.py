@@ -4708,7 +4708,7 @@ def _autopatch_evolve_score(
         cmd.append("--resume")
     if not freeze_eval:
         cmd.append("--no-freeze-eval")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         return float("inf")
     snapshot = _load_state_snapshot(state_dir)
@@ -4992,7 +4992,7 @@ def run_deep_autopatch(
                     mode,
                     task_name,
                     attempt_seed,
-                    generations=30,
+                    generations=15,
                     population=population,
                     universes=universes,
                     resume=state_snapshot is not None,
