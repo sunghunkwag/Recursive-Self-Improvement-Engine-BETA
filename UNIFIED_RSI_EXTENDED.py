@@ -4,14 +4,6 @@ UNIFIED_RSI_EXTENDED.py
 True RSI (Recursive Self-Improvement) Engine - BETA (Executable)
 ================================================================
 
-RSI Levels:
-- L0: Hyperparameter tuning
-- L1: Operator weight adaptation (source-patchable via OP_WEIGHT_INIT)
-- L2: Add/remove mutation operators (runtime library evolution)
-- L3: Modify evaluation function weights
-- L4: Persist learned operators into source (optional; markers supported)
-- L5: Modify self-modification logic (simple source edits)
-
 CLI:
   python UNIFIED_RSI_EXTENDED.py selftest
   python UNIFIED_RSI_EXTENDED.py evolve --fresh --generations 100
@@ -22,7 +14,6 @@ CLI:
   python UNIFIED_RSI_EXTENDED.py task-switch --task-a poly2 --task-b piecewise
   python UNIFIED_RSI_EXTENDED.py report --state-dir .rsi_state
   python UNIFIED_RSI_EXTENDED.py transfer-bench --from poly2 --to piecewise --budget 10
-  python UNIFIED_RSI_EXTENDED.py autopatch --levels 0,1,3 --apply
   python UNIFIED_RSI_EXTENDED.py rsi-loop --generations 50 --rounds 10
   python UNIFIED_RSI_EXTENDED.py rsi-loop --generations 20 --rounds 5 --mode learner
 
@@ -30,7 +21,6 @@ CHANGELOG
 ---------
 L0: Solver supports expression genomes and strict program-mode genomes (Assign/If/Return only).
 L1: RuleDSL controls mutation/crossover/novelty/acceptance/curriculum knobs per generation.
-L2: Meta-meta loop proposes RuleDSL patches and accepts only when meta-test transfer improves.
 Metrics: frozen train/hold/stress/test sets, per-gen logs, and transfer report (AUC/regret/recovery/gap).
 Algo: Added algorithmic task suite, algo-mode validator/sandbox, and transfer-bench command.
 """
@@ -185,8 +175,10 @@ class RunLogger:
 
 @dataclass
 class InventionProgramCandidate:
+    candidate_id: str
     code: str
     origin: str
+    parent_id: Optional[str] = None
     score: float = 0.0
     diagnostics: Dict[str, Any] = field(default_factory=dict)
     features: Dict[str, int] = field(default_factory=dict)
@@ -285,6 +277,14 @@ class InventionRepresentation:
                     return task.heuristic_path()
                 if task.kind == 'transform':
                     return ''.join(sorted(task.input))
+                if task.kind == 'aggregate':
+                    if getattr(task, 'hint', None) == 'max':
+                        return max(task.input)
+                    if getattr(task, 'hint', None) == 'min':
+                        return min(task.input)
+                    if getattr(task, 'hint', None) == 'len':
+                        return len(task.input)
+                    return sum(task.input)
                 return task.fallback()
                 """
             ).strip(),
@@ -312,6 +312,8 @@ class InventionRepresentation:
                         memo[s] = min(s[0] + best(s[1:]), ''.join(sorted(s)))
                         return memo[s]
                     return best(task.input)
+                if task.kind == 'aggregate':
+                    return sum(task.input)
                 return task.fallback()
                 """
             ).strip(),
@@ -410,13 +412,13 @@ class InventionProgramGenerator:
 
     def _grammar_program(self) -> InventionProgramCandidate:
         code = self.representation.expand("program")
-        return InventionProgramCandidate(code=code, origin="grammar")
+        return InventionProgramCandidate(candidate_id=sha256(code + str(time.time())), code=code, origin="grammar")
 
     def _compose_program(self) -> InventionProgramCandidate:
         helpers = random.sample(self.representation.library, k=1)
         base = self.representation.expand("program")
         code = "\n\n".join(helpers + [base])
-        return InventionProgramCandidate(code=code, origin="compose")
+        return InventionProgramCandidate(candidate_id=sha256(code + str(time.time())), code=code, origin="compose")
 
 
 @dataclass
@@ -425,6 +427,7 @@ class InventionTask:
     input: Any
     expected: Any
     hint: Optional[str] = None
+    descriptor: Dict[str, Any] = field(default_factory=dict)
 
     def heuristic_path(self) -> Any:
         return self.expected
@@ -442,35 +445,308 @@ class InventionTask:
         return self.expected
 
 
-class InventionTaskDomain:
-    """Generates diverse tasks to avoid overfitting to a fixed benchmark.
-
-    The engine must invent reusable procedures across tasks, not just tune.
-    """
+class ProblemGenerator:
+    """Mutates and creates tasks continuously to avoid a fixed finite set."""
 
     def __init__(self) -> None:
         self.seed = 0
+        self.base_kinds = ["sequence", "path", "transform", "aggregate"]
+        self.transform_ops = ["sort", "reverse", "unique", "shift"]
+        self.aggregate_ops = ["sum", "max", "min", "len"]
 
-    def generate_tasks(self, count: int = 3) -> List[InventionTask]:
+    def generate_tasks(
+        self,
+        count: int = 3,
+        parents: Optional[List[InventionTask]] = None,
+    ) -> List[InventionTask]:
         tasks: List[InventionTask] = []
         for _ in range(count):
             self.seed += 1
-            random.seed(self.seed)
-            choice = random.choice(["sequence", "path", "transform"])
-            if choice == "sequence":
-                data = [random.randint(1, 5) for _ in range(random.randint(3, 5))]
-                expected = [sum(data[:i + 1]) for i in range(len(data))]
-                tasks.append(InventionTask(kind="sequence", input=data, expected=expected, hint="prefix"))
-            elif choice == "path":
-                size = random.randint(3, 4)
-                grid = [[random.randint(1, 9) for _ in range(size)] for _ in range(size)]
-                expected = sum(grid[0]) + sum(row[-1] for row in grid[1:])
-                tasks.append(InventionTask(kind="path", input=grid, expected=expected, hint="grid"))
+            random.seed(self.seed + random.randint(0, 9999))
+            if parents and random.random() < 0.5:
+                parent = random.choice(parents)
+                tasks.append(self.mutate_task(parent))
             else:
-                word = "".join(random.choice("abcd") for _ in range(5))
-                expected = "".join(sorted(word))
-                tasks.append(InventionTask(kind="transform", input=word, expected=expected, hint="sort"))
+                tasks.append(self.create_task())
         return tasks
+
+    def create_task(self) -> InventionTask:
+        kind = random.choice(self.base_kinds + [f"transform:{random.choice(self.transform_ops)}"])
+        if kind == "sequence":
+            data = [random.randint(1, 7) for _ in range(random.randint(3, 6))]
+            expected = [sum(data[:i + 1]) for i in range(len(data))]
+            return InventionTask(kind=kind, input=data, expected=expected, hint="prefix")
+        if kind == "path":
+            size = random.randint(3, 5)
+            grid = [[random.randint(1, 9) for _ in range(size)] for _ in range(size)]
+            expected = sum(grid[0]) + sum(row[-1] for row in grid[1:])
+            return InventionTask(kind=kind, input=grid, expected=expected, hint="grid")
+        if kind.startswith("transform"):
+            op = kind.split(":", 1)[1] if ":" in kind else random.choice(self.transform_ops)
+            word = "".join(random.choice("abcde") for _ in range(random.randint(4, 7)))
+            expected = self._apply_transform(op, word)
+            return InventionTask(kind="transform", input=word, expected=expected, hint=op, descriptor={"op": op})
+        op = random.choice(self.aggregate_ops)
+        data = [random.randint(1, 9) for _ in range(random.randint(3, 6))]
+        expected = self._apply_aggregate(op, data)
+        return InventionTask(kind="aggregate", input=data, expected=expected, hint=op, descriptor={"op": op})
+
+    def mutate_task(self, task: InventionTask) -> InventionTask:
+        if task.kind == "sequence":
+            data = [x + random.choice([-1, 0, 1]) for x in task.input]
+            data.append(random.randint(1, 7))
+            expected = [sum(data[:i + 1]) for i in range(len(data))]
+            return InventionTask(kind=task.kind, input=data, expected=expected, hint=task.hint, descriptor=task.descriptor)
+        if task.kind == "path":
+            grid = [row[:] for row in task.input]
+            r = random.randint(0, len(grid) - 1)
+            c = random.randint(0, len(grid[0]) - 1)
+            grid[r][c] = max(1, grid[r][c] + random.choice([-2, -1, 1, 2]))
+            expected = sum(grid[0]) + sum(row[-1] for row in grid[1:])
+            return InventionTask(kind=task.kind, input=grid, expected=expected, hint=task.hint, descriptor=task.descriptor)
+        if task.kind == "transform":
+            op = task.descriptor.get("op", random.choice(self.transform_ops))
+            word = task.input + random.choice("abcde")
+            expected = self._apply_transform(op, word)
+            return InventionTask(kind="transform", input=word, expected=expected, hint=op, descriptor={"op": op})
+        if task.kind == "aggregate":
+            op = task.descriptor.get("op", random.choice(self.aggregate_ops))
+            data = task.input + [random.randint(1, 9)]
+            expected = self._apply_aggregate(op, data)
+            return InventionTask(kind="aggregate", input=data, expected=expected, hint=op, descriptor={"op": op})
+        return self.create_task()
+
+    def _apply_transform(self, op: str, word: str) -> str:
+        if op == "sort":
+            return "".join(sorted(word))
+        if op == "reverse":
+            return word[::-1]
+        if op == "unique":
+            return "".join(dict.fromkeys(word))
+        if op == "shift":
+            return "".join(chr(((ord(ch) - 97 + 1) % 26) + 97) for ch in word)
+        return word
+
+    def _apply_aggregate(self, op: str, data: List[int]) -> Any:
+        if op == "sum":
+            return sum(data)
+        if op == "max":
+            return max(data)
+        if op == "min":
+            return min(data)
+        if op == "len":
+            return len(data)
+        return sum(data)
+
+
+@dataclass
+class RewardModel:
+    performance_weight: float = 1.0
+    transfer_weight: float = 0.7
+    reuse_weight: float = 0.4
+    compression_weight: float = 0.3
+
+    def score(self, metrics: Dict[str, float]) -> float:
+        return (
+            self.performance_weight * metrics.get("performance", 0.0)
+            + self.transfer_weight * metrics.get("transfer", 0.0)
+            + self.reuse_weight * metrics.get("reuse", 0.0)
+            + self.compression_weight * metrics.get("compression", 0.0)
+        )
+
+
+@dataclass
+class CandidateRecord:
+    candidate_id: str
+    parent_id: Optional[str]
+    origin: str
+    code: str
+    score: float
+    metrics: Dict[str, float]
+    timestamp_ms: int
+
+
+class InventionArchive:
+    """Archive with lineage and a reusable subroutine pool."""
+
+    def __init__(self, promotion_threshold: int = 2) -> None:
+        self.records: List[CandidateRecord] = []
+        self.lineage: Dict[str, CandidateRecord] = {}
+        self.subroutine_pool: Dict[str, int] = {}
+        self.promotion_threshold = promotion_threshold
+
+    def add(self, candidate: InventionProgramCandidate) -> None:
+        metrics = candidate.diagnostics.get("metrics", {})
+        record = CandidateRecord(
+            candidate_id=candidate.candidate_id,
+            parent_id=candidate.parent_id,
+            origin=candidate.origin,
+            code=candidate.code,
+            score=candidate.score,
+            metrics=metrics,
+            timestamp_ms=now_ms(),
+        )
+        self.records.append(record)
+        self.lineage[candidate.candidate_id] = record
+
+    def note_subroutine(self, snippet: str) -> bool:
+        count = self.subroutine_pool.get(snippet, 0) + 1
+        self.subroutine_pool[snippet] = count
+        return count >= self.promotion_threshold
+
+
+class Searcher:
+    name: str = "base"
+
+    def propose(
+        self,
+        representation: InventionRepresentation,
+        archive: InventionArchive,
+        problem_generator: ProblemGenerator,
+    ) -> InventionProgramCandidate:
+        raise NotImplementedError
+
+
+class LocalEditSearcher(Searcher):
+    name = "local_edit"
+
+    def propose(
+        self,
+        representation: InventionRepresentation,
+        archive: InventionArchive,
+        problem_generator: ProblemGenerator,
+    ) -> InventionProgramCandidate:
+        source = representation.expand("program")
+        if archive.records:
+            source = random.choice(archive.records).code
+        mutated = self._mutate_code(source)
+        return InventionProgramCandidate(candidate_id=sha256(mutated + str(time.time())), code=mutated, origin=self.name)
+
+    def _mutate_code(self, code: str) -> str:
+        tree = ast.parse(code)
+        constants = [node for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, int)]
+        if constants:
+            node = random.choice(constants)
+            node.value = node.value + random.choice([-1, 1])
+            return ast.unparse(tree)
+        return code.replace("range(3)", "range(4)", 1)
+
+
+class StructuralComposeSearcher(Searcher):
+    name = "structural_compose"
+
+    def propose(
+        self,
+        representation: InventionRepresentation,
+        archive: InventionArchive,
+        problem_generator: ProblemGenerator,
+    ) -> InventionProgramCandidate:
+        helpers = []
+        if representation.library:
+            helpers.extend(random.sample(representation.library, k=min(2, len(representation.library))))
+        if archive.subroutine_pool:
+            helpers.extend(random.sample(list(archive.subroutine_pool.keys()), k=min(1, len(archive.subroutine_pool))))
+        base = representation.expand("program")
+        code = "\n\n".join(helpers + [base])
+        return InventionProgramCandidate(candidate_id=sha256(code + str(time.time())), code=code, origin=self.name)
+
+
+class RepresentationEditSearcher(Searcher):
+    name = "representation_edit"
+
+    def propose(
+        self,
+        representation: InventionRepresentation,
+        archive: InventionArchive,
+        problem_generator: ProblemGenerator,
+    ) -> InventionProgramCandidate:
+        def new_strategy(_: InventionRepresentation) -> str:
+            return textwrap.indent(
+                textwrap.dedent(
+                    """
+                    if task.kind == 'aggregate':
+                        if getattr(task, 'hint', None) == 'max':
+                            return max(task.input)
+                        if getattr(task, 'hint', None) == 'min':
+                            return min(task.input)
+                        return sum(task.input)
+                    """
+                ).strip(),
+                "    ",
+            )
+
+        representation.add_production("strategy", new_strategy)
+        code = representation.expand("program")
+        return InventionProgramCandidate(candidate_id=sha256(code + str(time.time())), code=code, origin=self.name)
+
+
+class SearcherManager:
+    def __init__(self, searchers: List[Searcher]) -> None:
+        self.searchers = {s.name: s for s in searchers}
+        self.weights: Dict[str, float] = {s.name: 1.0 for s in searchers}
+
+    def propose(
+        self,
+        representation: InventionRepresentation,
+        archive: InventionArchive,
+        problem_generator: ProblemGenerator,
+    ) -> InventionProgramCandidate:
+        searcher = self._select_searcher()
+        candidate = self.searchers[searcher].propose(representation, archive, problem_generator)
+        candidate.origin = searcher
+        return candidate
+
+    def _select_searcher(self) -> str:
+        total = sum(self.weights.values())
+        roll = random.random() * total
+        cumulative = 0.0
+        for name, weight in self.weights.items():
+            cumulative += weight
+            if roll <= cumulative:
+                return name
+        return next(iter(self.weights))
+
+    def update_weight(self, searcher: str, delta: float) -> None:
+        self.weights[searcher] = clamp(self.weights.get(searcher, 1.0) + delta, 0.2, 5.0)
+
+
+@dataclass
+class BudgetLevel:
+    name: str
+    task_count: int
+    transfer_count: int
+    survivors: int
+
+
+class BudgetLadderPolicy:
+    """Budget ladder (B1..B4) where only survivors advance."""
+
+    def __init__(self) -> None:
+        self.levels = [
+            BudgetLevel("B1", task_count=2, transfer_count=1, survivors=4),
+            BudgetLevel("B2", task_count=3, transfer_count=2, survivors=3),
+            BudgetLevel("B3", task_count=4, transfer_count=3, survivors=2),
+            BudgetLevel("B4", task_count=5, transfer_count=4, survivors=1),
+        ]
+
+    def run(
+        self,
+        candidates: List[InventionProgramCandidate],
+        problem_generator: ProblemGenerator,
+        evaluator: "InventionEvaluator",
+        archive: InventionArchive,
+        reward_model: RewardModel,
+    ) -> List[InventionProgramCandidate]:
+        survivors = candidates
+        for level in self.levels:
+            if not survivors:
+                break
+            tasks = problem_generator.generate_tasks(level.task_count)
+            transfer_tasks = problem_generator.generate_tasks(level.transfer_count, parents=tasks)
+            for candidate in survivors:
+                evaluator.evaluate(candidate, tasks, transfer_tasks, archive, reward_model)
+            survivors = sorted(survivors, key=lambda c: c.score, reverse=True)[: level.survivors]
+        return survivors
 
 
 class InventionEvaluator:
@@ -480,17 +756,32 @@ class InventionEvaluator:
     """
 
     def __init__(self) -> None:
-        self.novelty_weight = 0.5
+        self.novelty_weight = 0.2
         self.archive_features: List[Dict[str, int]] = []
 
-    def evaluate(self, candidate: InventionProgramCandidate, tasks: List[InventionTask], timeout: float = 1.0) -> None:
+    def evaluate(
+        self,
+        candidate: InventionProgramCandidate,
+        tasks: List[InventionTask],
+        transfer_tasks: List[InventionTask],
+        archive: "InventionArchive",
+        reward_model: "RewardModel",
+        timeout: float = 1.0,
+    ) -> None:
         results: List[Tuple[bool, str]] = []
         for task in tasks:
             success, info = self._run_in_subprocess(candidate.code, task, timeout)
             results.append((success, info))
+        transfer_results: List[Tuple[bool, str]] = []
+        for task in transfer_tasks:
+            success, info = self._run_in_subprocess(candidate.code, task, timeout)
+            transfer_results.append((success, info))
         candidate.diagnostics["results"] = results
-        candidate.score = self._score(candidate, results, tasks)
+        candidate.diagnostics["transfer_results"] = transfer_results
         candidate.features = self._extract_features(candidate.code)
+        metrics = self._score_components(candidate, results, transfer_results, tasks, archive)
+        candidate.diagnostics["metrics"] = metrics
+        candidate.score = reward_model.score(metrics)
         self.archive_features.append(candidate.features)
 
     def _run_in_subprocess(self, code: str, task: InventionTask, timeout: float) -> Tuple[bool, str]:
@@ -519,16 +810,27 @@ class InventionEvaluator:
             return False, "no output"
         return queue.get()
 
-    def _score(
+    def _score_components(
         self,
         candidate: InventionProgramCandidate,
         results: List[Tuple[bool, str]],
+        transfer_results: List[Tuple[bool, str]],
         tasks: List[InventionTask],
-    ) -> float:
+        archive: "InventionArchive",
+    ) -> Dict[str, float]:
         success_rate = sum(1 for ok, _ in results if ok) / max(1, len(results))
+        transfer_rate = sum(1 for ok, _ in transfer_results if ok) / max(1, len(transfer_results))
+        reuse = self._reuse_score(candidate.code, archive)
+        compression = self._compression_score(candidate.code)
         novelty = self._novelty(candidate.code)
         anti_trick = -0.2 if self._is_trivial(candidate.code, tasks) else 0.0
-        return success_rate + self.novelty_weight * novelty + anti_trick
+        return {
+            "performance": success_rate + anti_trick,
+            "transfer": transfer_rate,
+            "reuse": reuse,
+            "compression": compression,
+            "novelty": novelty,
+        }
 
     def _novelty(self, code: str) -> float:
         features = self._extract_features(code)
@@ -555,6 +857,19 @@ class InventionEvaluator:
             features[name] = features.get(name, 0) + 1
         return features
 
+    def _reuse_score(self, code: str, archive: "InventionArchive") -> float:
+        if not archive.subroutine_pool:
+            return 0.0
+        hits = 0
+        for snippet in archive.subroutine_pool:
+            if snippet in code:
+                hits += 1
+        return hits / max(1, len(archive.subroutine_pool))
+
+    def _compression_score(self, code: str) -> float:
+        node_count = sum(1 for _ in ast.walk(ast.parse(code)))
+        return 1.0 / (1.0 + node_count / 50.0)
+
 
 class InventionSelfModifier:
     """Adjusts generator, evaluator, and grammar based on diagnostics.
@@ -565,22 +880,35 @@ class InventionSelfModifier:
     def __init__(
         self,
         representation: InventionRepresentation,
-        generator: InventionProgramGenerator,
         evaluator: InventionEvaluator,
+        searchers: SearcherManager,
+        reward_model: RewardModel,
+        budget_policy: BudgetLadderPolicy,
     ) -> None:
         self.representation = representation
-        self.generator = generator
         self.evaluator = evaluator
+        self.searchers = searchers
+        self.reward_model = reward_model
+        self.budget_policy = budget_policy
 
     def adapt(self, candidate: InventionProgramCandidate) -> None:
-        results = candidate.diagnostics.get("results", [])
-        failures = [info for ok, info in results if not ok]
-        if failures:
-            self.generator.operator_weights["compose"] += 0.1
-            self.evaluator.novelty_weight = min(1.5, self.evaluator.novelty_weight + 0.1)
+        metrics = candidate.diagnostics.get("metrics", {})
+        performance = metrics.get("performance", 0.0)
+        transfer = metrics.get("transfer", 0.0)
+        reuse = metrics.get("reuse", 0.0)
+        if performance < 0.7:
+            self.searchers.update_weight("local_edit", 0.2)
+            self.evaluator.novelty_weight = min(1.5, self.evaluator.novelty_weight + 0.05)
             self._expand_grammar()
-        else:
-            self.generator.operator_weights["grammar"] += 0.1
+        if transfer < 0.5:
+            self.searchers.update_weight("representation_edit", 0.2)
+            self.reward_model.transfer_weight = min(1.2, self.reward_model.transfer_weight + 0.1)
+        if reuse < 0.2:
+            self.searchers.update_weight("structural_compose", 0.2)
+            self.reward_model.reuse_weight = min(1.0, self.reward_model.reuse_weight + 0.1)
+        if performance > 0.8 and transfer > 0.6:
+            for level in self.budget_policy.levels:
+                level.task_count = min(level.task_count + 1, 6)
 
     def _expand_grammar(self) -> None:
         def new_control(_: InventionRepresentation) -> str:
@@ -606,25 +934,44 @@ class InventionMetaController:
 
     def __init__(self) -> None:
         self.representation = InventionRepresentation()
-        self.generator = InventionProgramGenerator(self.representation)
         self.evaluator = InventionEvaluator()
-        self.self_modifier = InventionSelfModifier(self.representation, self.generator, self.evaluator)
-        self.task_domain = InventionTaskDomain()
-        self.archive: List[InventionProgramCandidate] = []
+        self.problem_generator = ProblemGenerator()
+        self.reward_model = RewardModel()
+        self.archive = InventionArchive()
+        self.searchers = SearcherManager(
+            [LocalEditSearcher(), StructuralComposeSearcher(), RepresentationEditSearcher()]
+        )
+        self.budget_policy = BudgetLadderPolicy()
+        self.self_modifier = InventionSelfModifier(
+            self.representation,
+            self.evaluator,
+            self.searchers,
+            self.reward_model,
+            self.budget_policy,
+        )
+        self.candidate_history: List[InventionProgramCandidate] = []
 
     def run(self, iterations: int = 5) -> None:
         for _ in range(iterations):
-            tasks = self.task_domain.generate_tasks()
-            candidate = self.generator.generate()
-            self.evaluator.evaluate(candidate, tasks)
-            self._retain(candidate)
-            self.self_modifier.adapt(candidate)
+            candidates = self._generate_candidates(pool_size=8)
+            survivors = self.budget_policy.run(
+                candidates,
+                self.problem_generator,
+                self.evaluator,
+                self.archive,
+                self.reward_model,
+            )
+            for candidate in survivors:
+                self._retain(candidate)
+                self.self_modifier.adapt(candidate)
 
     def _retain(self, candidate: InventionProgramCandidate) -> None:
         if candidate.score <= 0:
             return
-        self.archive.append(candidate)
+        self.archive.add(candidate)
+        self.candidate_history.append(candidate)
         self._extract_helpers(candidate.code)
+        self._extract_subroutines(candidate.code)
 
     def _extract_helpers(self, code: str) -> None:
         tree = ast.parse(code)
@@ -634,6 +981,34 @@ class InventionMetaController:
                 if helper_code not in self.representation.library:
                     self.representation.library.append(helper_code)
 
+    def _extract_subroutines(self, code: str) -> None:
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "solve":
+                for child in node.body:
+                    snippet = ast.unparse(child)
+                    if self.archive.note_subroutine(snippet):
+                        self._promote_subroutine(snippet)
+
+    def _promote_subroutine(self, snippet: str) -> None:
+        if snippet.strip().startswith("def "):
+            if snippet not in self.representation.library:
+                self.representation.library.append(snippet)
+            return
+        name = f"subroutine_{sha256(snippet)[:8]}"
+        helper_code = "def " + name + "(task):\n" + textwrap.indent(snippet, "    ") + "\n    return None"
+        if helper_code not in self.representation.library:
+            self.representation.library.append(helper_code)
+
+    def _generate_candidates(self, pool_size: int) -> List[InventionProgramCandidate]:
+        candidates: List[InventionProgramCandidate] = []
+        for _ in range(pool_size):
+            candidate = self.searchers.propose(self.representation, self.archive, self.problem_generator)
+            if self.archive.records:
+                candidate.parent_id = random.choice(self.archive.records).candidate_id
+            candidates.append(candidate)
+        return candidates
+
 
 def cmd_invention(args):
     random.seed(args.seed)
@@ -642,7 +1017,7 @@ def cmd_invention(args):
     start = time.time()
     controller.run(iterations=args.iterations)
     duration = time.time() - start
-    print(f"Completed {len(controller.archive)} retained candidates in {duration:.2f}s")
+    print(f"Completed {len(controller.archive.records)} retained candidates in {duration:.2f}s")
     return 0
 
 
@@ -2035,7 +2410,7 @@ class EvalResult:
     err: Optional[str] = None
 
 
-SCORE_W_HOLD = 0.6
+SCORE_W_HOLD = 0.57
 SCORE_W_STRESS = 0.4
 SCORE_W_TRAIN = 0.0
 
@@ -4036,323 +4411,118 @@ def transfer_bench(
 
 
 # ---------------------------
-# Self-modification (AutoPatch)
+# RSI Loop (Hard Gates + Rollback)
 # ---------------------------
 
-PATCH_LEVELS = {
-    0: "hyperparameter",
-    1: "op_weight",
-    2: "operator_toggle",
-    3: "eval_weight",
-    4: "operator_persist",
-    5: "meta_logic",
-    6: "dsl_extension",
-}
+STRESS_MAX = 1_000_000.0
+RSI_CONFIRM_ROUNDS = 2
 
-@dataclass
-class PatchPlan:
-    level: int
-    patch_id: str
-    title: str
-    rationale: str
-    new_source: str
-    diff: str
+def _outputs_constant(outputs: List[Any], tol: float = 1e-9) -> bool:
+    if not outputs:
+        return True
+    first = outputs[0]
+    if isinstance(first, (int, float)):
+        return all(isinstance(o, (int, float)) and abs(o - first) <= tol for o in outputs[1:])
+    return all(_algo_equal(o, first) for o in outputs[1:])
 
-def _read_self() -> str:
-    return Path(__file__).read_text(encoding="utf-8")
+def _piecewise_constant(outputs: List[Any], max_unique: int = 2) -> bool:
+    if not outputs:
+        return True
+    uniques: List[Any] = []
+    for out in outputs:
+        if not any(_algo_equal(out, seen) for seen in uniques):
+            uniques.append(out)
+        if len(uniques) > max_unique:
+            return False
+    return True
 
-def _patch_dataclass(src: str, cls: str, field_name: str, val: Any) -> Tuple[bool, str]:
+def _collect_outputs(code: str, xs: List[Any], mode: str, extra_env: Optional[Dict[str, Any]] = None) -> Tuple[bool, List[Any], str]:
+    outputs: List[Any] = []
+    if mode == "learner":
+        env = safe_load_module(code)
+        if not env:
+            return False, [], "load_failed"
+        required = ["init_mem", "encode", "predict"]
+        if not all(name in env and callable(env[name]) for name in required):
+            return False, [], "missing_funcs"
+        mem = env["init_mem"]()
+        encode = env["encode"]
+        predict = env["predict"]
+        for x in xs:
+            try:
+                z = encode(x, mem)
+                out = predict(z, mem)
+            except Exception:
+                return False, [], "exec_error"
+            outputs.append(out)
+        return True, outputs, ""
+    if mode == "algo":
+        for x in xs:
+            out, _, timeout = safe_exec_algo(code, x)
+            if timeout:
+                return False, [], "timeout"
+            outputs.append(out)
+        return True, outputs, ""
+    for x in xs:
+        out = safe_exec(code, x, extra_env=extra_env)
+        if out is None:
+            return False, [], "no_output"
+        outputs.append(out)
+    return True, outputs, ""
+
+def _hard_gate_ok(code: str, batch: Batch, mode: str, task_name: str) -> Tuple[bool, str]:
+    xs = batch.x_ho[:8] if batch.x_ho else batch.x_tr[:8]
+    if not xs:
+        return False, "no_inputs"
+    ok, outputs, err = _collect_outputs(code, xs, mode)
+    if not ok:
+        return False, err
+    if _outputs_constant(outputs):
+        return False, "constant_output"
+    if _piecewise_constant(outputs):
+        return False, "piecewise_constant"
+    return True, ""
+
+def _evaluate_candidate(g: Union[Genome, LearnerGenome], batch: Batch, mode: str, task_name: str) -> EvalResult:
+    if mode == "learner":
+        return evaluate_learner(g, batch, task_name)
+    if mode == "algo":
+        return evaluate_algo(g, batch, task_name)
+    return evaluate(g, batch, task_name)
+
+def _merge_stress(fixed: Batch, resampled: Batch) -> Batch:
+    return Batch(
+        x_tr=resampled.x_tr,
+        y_tr=resampled.y_tr,
+        x_ho=resampled.x_ho,
+        y_ho=resampled.y_ho,
+        x_st=fixed.x_st + resampled.x_st,
+        y_st=fixed.y_st + resampled.y_st,
+        x_te=resampled.x_te,
+        y_te=resampled.y_te,
+    )
+
+def _load_rsi_archive(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {"entries": [], "current": None, "consecutive": 0}
     try:
-        mod = ast.parse(src)
-        patched = False
-        for node in ast.walk(mod):
-            if isinstance(node, ast.ClassDef) and node.name == cls:
-                for stmt in node.body:
-                    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id == field_name:
-                        stmt.value = ast.Constant(value=val)
-                        patched = True
-        if not patched:
-            return (False, src)
-        ast.fix_missing_locations(mod)
-        return (True, ast.unparse(mod))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return (False, src)
+        return {"entries": [], "current": None, "consecutive": 0}
 
-def _patch_global_const(src: str, name: str, val: float) -> Tuple[bool, str]:
-    pattern = f"^({re.escape(name)}\\s*=\\s*)[\\d.eE+-]+"
-    new_src, n = re.subn(pattern, f"\\g<1>{val}", src, flags=re.MULTILINE)
-    return (n > 0, new_src)
+def _save_rsi_archive(path: Path, archive: Dict[str, Any]) -> None:
+    safe_mkdir(path.parent)
+    path.write_text(json.dumps(archive, indent=2), encoding="utf-8")
 
-def _patch_dict_const(src: str, dict_name: str, key: str, val: float) -> Tuple[bool, str]:
-    try:
-        mod = ast.parse(src)
-        patched = False
-        for node in ast.walk(mod):
-            if isinstance(node, ast.Assign):
-                for t in node.targets:
-                    if isinstance(t, ast.Name) and t.id == dict_name and isinstance(node.value, ast.Dict):
-                        # find key
-                        for i, k in enumerate(node.value.keys):
-                            if isinstance(k, ast.Constant) and k.value == key:
-                                node.value.values[i] = ast.Constant(value=float(val))
-                                patched = True
-        if not patched:
-            return (False, src)
-        ast.fix_missing_locations(mod)
-        return (True, ast.unparse(mod))
-    except Exception:
-        return (False, src)
-
-def _rewrite_operators_block(src: str, new_lib: Dict) -> str:
-    pattern = r"(# @@OPERATORS_LIB_START@@\s*\nOPERATORS_LIB:\s*Dict\[str,\s*Dict\]\s*=\s*)(\{.*?\})(\s*\n# @@OPERATORS_LIB_END@@)"
-    match = re.search(pattern, src, flags=re.DOTALL)
-    if not match:
-        return src
-    prefix, _, suffix = match.group(1), match.group(2), match.group(3)
-    lines = ["{"]
-    for name, spec in new_lib.items():
-        lines.append(f'    "{name}": {json.dumps(spec)},')
-    lines.append("}")
-    new_dict = "\n".join(lines)
-    return src[: match.start()] + prefix + new_dict + suffix + src[match.end():]
-
-def _patch_safe_funcs(src: str, name: str, expr: str) -> Tuple[bool, str]:
-    try:
-        mod = ast.parse(src)
-        patched = False
-        for node in ast.walk(mod):
-            if isinstance(node, ast.Assign):
-                for t in node.targets:
-                    if isinstance(t, ast.Name) and t.id == "SAFE_FUNCS" and isinstance(node.value, ast.Dict):
-                        keys = node.value.keys
-                        values = node.value.values
-                        if any(isinstance(k, ast.Constant) and k.value == name for k in keys):
-                            return (False, src)
-                        keys.append(ast.Constant(value=name))
-                        values.append(ast.parse(expr, mode="eval").body)
-                        patched = True
-        if not patched:
-            return (False, src)
-        ast.fix_missing_locations(mod)
-        return (True, ast.unparse(mod))
-    except Exception:
-        return (False, src)
-
-def propose_patches(gs: GlobalState, levels: List[int]) -> List[PatchPlan]:
-    src = _read_self()
-    plans: List[PatchPlan] = []
-    rng = random.Random(gs.updated_ms)
-
-    best_u = next((s for s in gs.universes if s.get("uid") == gs.selected_uid), gs.universes[0] if gs.universes else {})
-    meta = best_u.get("meta", {})
-
-    # L0: tune hyperparams (dataclass literal fields)
-    if 0 in levels:
-        for cls, field_name, base in [
-            ("MetaState", "mutation_rate", 0.65),
-            ("MetaState", "crossover_rate", 0.2),
-            ("MetaState", "epsilon_explore", 0.15),
-        ]:
-            cur = meta.get(field_name, base)
-            new_val = round(clamp(cur * rng.uniform(0.85, 1.15), 0.1, 0.95), 4)
-            ok, new_src = _patch_dataclass(src, cls, field_name, new_val)
-            if ok and new_src != src:
-                plans.append(PatchPlan(
-                    0,
-                    sha256(f"{cls}.{field_name}={new_val}")[:8],
-                    f"L0: {cls}.{field_name} -> {new_val}",
-                    "Adaptive tuning",
-                    new_src,
-                    unified_diff(src, new_src, "script.py"),
-                ))
-
-    # L1: patch OP_WEIGHT_INIT dict entries (source-patchable now)
-    if 1 in levels:
-        op_w = meta.get("op_weights", {})
-        # pick a few ops to perturb
-        if isinstance(op_w, dict) and op_w:
-            ops = list(op_w.items())[: min(4, len(op_w))]
-        else:
-            ops = list(OP_WEIGHT_INIT.items())[:4]
-        new_src = src
-        changed = False
-        for op, w in ops:
-            new_w = round(clamp(float(w) * rng.uniform(0.9, 1.1), 0.1, 5.0), 3)
-            ok, new_src2 = _patch_dict_const(new_src, "OP_WEIGHT_INIT", op, new_w)
-            if ok and new_src2 != new_src:
-                changed = True
-                new_src = new_src2
-        if changed and new_src != src:
-            plans.append(PatchPlan(
-                1,
-                sha256("L1:" + str(rng.random()))[:8],
-                "L1: OP_WEIGHT_INIT perturb",
-                "Operator-weight prior update",
-                new_src,
-                unified_diff(src, new_src, "script.py"),
-            ))
-
-    # L3: rebalance eval weights
-    if 3 in levels:
-        for name, base in [("SCORE_W_HOLD", 0.6), ("SCORE_W_STRESS", 0.35), ("SCORE_W_TRAIN", 0.05)]:
-            new_val = round(clamp(base * rng.uniform(0.8, 1.2), 0.05, 0.9), 2)
-            ok, new_src = _patch_global_const(src, name, new_val)
-            if ok and new_src != src:
-                plans.append(PatchPlan(
-                    3,
-                    sha256(f"{name}={new_val}")[:8],
-                    f"L3: {name} -> {new_val}",
-                    "Eval rebalancing",
-                    new_src,
-                    unified_diff(src, new_src, "script.py"),
-                ))
-
-    # L4: persist OPERATORS_LIB into source (optional)
-    if 4 in levels and OPERATORS_LIB:
-        new_src = _rewrite_operators_block(src, OPERATORS_LIB)
-        if new_src != src:
-            plans.append(PatchPlan(
-                4,
-                sha256(str(OPERATORS_LIB))[:8],
-                f"L4: Persist {len(OPERATORS_LIB)} learned operators",
-                f"Operators: {list(OPERATORS_LIB.keys())[:5]}",
-                new_src,
-                unified_diff(src, new_src, "script.py"),
-            ))
-
-    # L5: simple meta-logic edits (conservative)
-    if 5 in levels:
-        elite_mods = [
-            ("max(4, pop_size // 10)", "max(4, pop_size // 8)"),
-            ("max(4, pop_size // 8)", "max(4, pop_size // 12)"),
-            ("max(4, pop_size // 12)", "max(4, pop_size // 10)"),
-        ]
-        for old_pat, new_pat in elite_mods:
-            if old_pat in src:
-                new_src = src.replace(old_pat, new_pat, 1)
-                plans.append(PatchPlan(
-                    5,
-                    sha256(new_pat)[:8],
-                    "L5: elite ratio change",
-                    "Meta: selection pressure",
-                    new_src,
-                    unified_diff(src, new_src, "script.py"),
-                ))
-                break
-
-    # L6: extend DSL primitives (new safe operators)
-    if 6 in levels:
-        candidates = [
-            ("relu", "lambda x: x if x > 0 else 0"),
-            ("clip", "lambda x: clamp(x, -1.0, 1.0)"),
-            ("cube", "lambda x: x * x * x"),
-        ]
-        rng.shuffle(candidates)
-        for name, expr in candidates:
-            if name in SAFE_FUNCS:
-                continue
-            ok, new_src = _patch_safe_funcs(src, name, expr)
-            if ok and new_src != src:
-                plans.append(PatchPlan(
-                    6,
-                    sha256(f"{name}:{expr}")[:8],
-                    f"L6: add SAFE_FUNCS.{name}",
-                    "Extend DSL with new primitive operator",
-                    new_src,
-                    unified_diff(src, new_src, "script.py"),
-                ))
-                break
-
-    rng.shuffle(plans)
-    return plans[:8]
-
-def _probe_tasks(task_name: str) -> List[str]:
-    if task_name == "poly2":
-        return ["poly2", "poly3"]
-    if task_name in ("sort", "reverse", "filter", "max"):
-        return [task_name, "reverse" if task_name != "reverse" else "sort"]
-    return [task_name]
-
-def probe_run(script: Path, mode: str, task_name: str, gens: int = 5, pop: int = 16) -> float:
-    """PHASE D: probe on multiple seeds/tasks to avoid overfitting."""
-    seeds = [11, 23, 37]
-    tasks = _probe_tasks(task_name)
-    scores: List[float] = []
-    cmd_name = "learner-evolve" if mode == "learner" else "evolve"
-
-    with tempfile.TemporaryDirectory() as td:
-        for seed in seeds:
-            for task in tasks:
-                try:
-                    proc = subprocess.run(
-                        [sys.executable, str(script), cmd_name, "--fresh", "--generations", str(gens),
-                         "--population", str(pop), "--universes", "1", "--state-dir", td, "--seed", str(seed), "--task", task],
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                    )
-                    for line in reversed(proc.stdout.splitlines()):
-                        if "Score:" in line:
-                            m = re.search(r"Score:\s*([\d.]+)", line)
-                            if m:
-                                scores.append(float(m.group(1)))
-                                break
-                except Exception:
-                    scores.append(float("inf"))
-    if not scores:
-        return float("inf")
-    return sum(scores) / len(scores)
-
-def run_deep_autopatch(levels: List[int], candidates: int = 4, apply: bool = False, mode: str = "solver") -> Dict:
-    gs = load_state()
-    if not gs:
-        return {"error": "No state. Run evolve first."}
-
-    mode = mode or gs.mode
-    task_name = gs.task.get("name", "poly2") if isinstance(gs.task, dict) else "poly2"
-
-    script = Path(__file__).resolve()
-    baseline = probe_run(script, mode, task_name)
-    print(f"[AUTOPATCH L{levels}] Baseline: {baseline:.4f}")
-
-    plans = propose_patches(gs, levels)[:candidates]
-    if not plans:
-        return {"error": "No patches generated"}
-
-    results = []
-    best_plan, best_score = (None, baseline)
-
-    for p in plans:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
-            f.write(p.new_source)
-            tmp = Path(f.name)
-        try:
-            score = probe_run(tmp, mode, task_name)
-            improved = score < baseline - 1e-6
-            results.append({"level": p.level, "id": p.patch_id, "title": p.title, "score": score, "improved": improved})
-            print(f"[L{p.level}] {p.patch_id}: {p.title} -> {score:.4f} {'OK' if improved else 'FAIL'}")
-            if improved and score < best_score:
-                best_score, best_plan = score, p
-        finally:
-            tmp.unlink(missing_ok=True)
-
-    if best_plan and apply:
-        backup = script.with_suffix(".bak")
-        if not backup.exists():
-            backup.write_text(script.read_text(encoding="utf-8"), encoding="utf-8")
-        script.write_text(best_plan.new_source, encoding="utf-8")
-        print(f"[OK] Applied L{best_plan.level} patch: {best_plan.title}")
-        return {"applied": best_plan.patch_id, "level": best_plan.level, "score": best_score, "results": results}
-
-    if best_plan:
-        out = STATE_DIR / "patched.py"
-        out.write_text(best_plan.new_source, encoding="utf-8")
-        print(f"[OK] Best patch saved to {out}")
-        return {"best": best_plan.patch_id, "score": best_score, "file": str(out), "results": results}
-
-    return {"improved": False, "baseline": baseline, "results": results}
-
-def run_rsi_loop(gens_per_round: int, rounds: int, levels: List[int], pop: int, n_univ: int, mode: str, freeze_eval: bool = True):
+def run_rsi_loop(
+    gens_per_round: int,
+    rounds: int,
+    pop: int,
+    n_univ: int,
+    mode: str,
+    freeze_eval: bool = True,
+    meta_meta: bool = False,
+):
     task = TaskSpec()
     seed = int(time.time()) % 100000
     if meta_meta:
@@ -4370,14 +4540,107 @@ def run_rsi_loop(gens_per_round: int, rounds: int, levels: List[int], pop: int, 
         print(f"\n[RSI LOOP COMPLETE] {rounds} meta-meta rounds finished")
         return
 
+    archive_path = STATE_DIR / "rsi_archive.json"
+    archive = _load_rsi_archive(archive_path)
+    if archive.get("current") and "genome" not in archive["current"]:
+        archive = {"entries": [], "current": None, "consecutive": 0}
+    fixed_batch = get_task_batch(task, seed, freeze_eval=True, gen=0)
+    if fixed_batch is None:
+        print("[RSI] No batch available; aborting.")
+        return
+
     for r in range(rounds):
         print(f"\n{'='*60}\n[RSI ROUND {r+1}/{rounds}]\n{'='*60}")
         print(f"[EVOLVE] {gens_per_round} generations...")
-        run_multiverse(seed, task, gens_per_round, pop, n_univ, resume=(r > 0), mode=mode, freeze_eval=freeze_eval)
-        print(f"[AUTOPATCH] Trying L{levels}...")
-        result = run_deep_autopatch(levels, candidates=4, apply=True, mode=mode)
-        if result.get("applied"):
-            print("[RSI] Self-modified! Reloading...")
+        gs = run_multiverse(seed, task, gens_per_round, pop, n_univ, resume=(r > 0), mode=mode, freeze_eval=freeze_eval)
+
+        resampled = get_task_batch(task, seed + (r + 1) * 101, freeze_eval=False, gen=r)
+        if resampled is None:
+            print("[RSI] No batch available; skipping round.")
+            continue
+        batch = _merge_stress(fixed_batch, resampled)
+
+        current = archive.get("current")
+        if current:
+            current_code = current["code"]
+            current_genome = LearnerGenome(**current["genome"]) if mode == "learner" else Genome(**current["genome"])
+            ok_gate, gate_err = _hard_gate_ok(current_code, batch, mode, task.name)
+            current_eval = _evaluate_candidate(current_genome, batch, mode, task.name)
+            if (not ok_gate) or (not current_eval.ok) or current_eval.stress > STRESS_MAX:
+                print(f"[ROLLBACK] Current best failed gates ({gate_err or current_eval.err}). Rolling back.")
+                entries = archive.get("entries", [])
+                if entries:
+                    archive["current"] = entries[-1]
+                    archive["entries"] = entries[:-1]
+                else:
+                    archive["current"] = None
+                archive["consecutive"] = 0
+                _save_rsi_archive(archive_path, archive)
+                continue
+            archive["consecutive"] = archive.get("consecutive", 0) + 1
+            if archive["consecutive"] >= RSI_CONFIRM_ROUNDS:
+                current["confirmed"] = True
+
+        best_snapshot = gs.universes[0] if gs.universes else {}
+        best_data = best_snapshot.get("best")
+        if not best_data:
+            print("[RSI] No candidate found this round.")
+            continue
+        candidate = LearnerGenome(**best_data) if mode == "learner" else Genome(**best_data)
+        candidate_code = candidate.code
+
+        ok_gate, gate_err = _hard_gate_ok(candidate_code, batch, mode, task.name)
+        if not ok_gate:
+            print(f"[GATE] Candidate rejected: {gate_err}")
+            continue
+
+        cand_eval = _evaluate_candidate(candidate, batch, mode, task.name)
+        if not cand_eval.ok or cand_eval.stress > STRESS_MAX:
+            print(f"[GATE] Candidate rejected: {cand_eval.err or 'stress_max'}")
+            continue
+
+        if current:
+            current_code = current["code"]
+            current_genome = LearnerGenome(**current["genome"]) if mode == "learner" else Genome(**current["genome"])
+            current_eval = _evaluate_candidate(current_genome, batch, mode, task.name)
+            if not (cand_eval.hold < current_eval.hold and cand_eval.stress < current_eval.stress):
+                print("[ACCEPT] Candidate not strictly better on holdout and stress.")
+                continue
+
+        verify_batch = get_task_batch(task, seed + (r + 1) * 911, freeze_eval=False, gen=r + 1)
+        if verify_batch is None:
+            print("[RSI] No verification batch; skipping.")
+            continue
+        verify = _merge_stress(fixed_batch, verify_batch)
+        verify_eval = _evaluate_candidate(candidate, verify, mode, task.name)
+        if not verify_eval.ok or verify_eval.stress > STRESS_MAX:
+            print("[VERIFY] Candidate failed verification gates.")
+            continue
+        if current:
+            current_genome = LearnerGenome(**current["genome"]) if mode == "learner" else Genome(**current["genome"])
+            current_verify = _evaluate_candidate(current_genome, verify, mode, task.name)
+            if not (verify_eval.hold < current_verify.hold and verify_eval.stress < current_verify.stress):
+                print("[VERIFY] Candidate failed strict improvement on resampled holdout/stress.")
+                continue
+
+        archive_entry = {
+            "round": r + 1,
+            "gid": candidate.gid,
+            "code": candidate_code,
+            "hold": cand_eval.hold,
+            "stress": cand_eval.stress,
+            "genome": asdict(candidate),
+            "confirmed": False,
+        }
+        if archive.get("current"):
+            archive.setdefault("entries", []).append(archive["current"])
+        archive["current"] = archive_entry
+        archive["consecutive"] = 1
+        _save_rsi_archive(archive_path, archive)
+        print("[RSI] Accepted new best after verification.")
+
+        if archive["consecutive"] >= RSI_CONFIRM_ROUNDS:
+            print(f"[RSI] Best confirmed for {archive['consecutive']} consecutive rounds.")
 
     print(f"\n[RSI LOOP COMPLETE] {rounds} rounds finished")
 
@@ -4465,20 +4728,18 @@ def cmd_best(args):
     print(f"Generations: {gs.generations_done}")
     return 0
 
-def cmd_autopatch(args):
-    global STATE_DIR
-    STATE_DIR = Path(args.state_dir)
-    levels = [int(l) for l in args.levels.split(",") if l.strip()]
-    mode = args.mode or ""
-    result = run_deep_autopatch(levels, args.candidates, args.apply, mode=mode)
-    print(json.dumps(result, indent=2, default=str))
-    return 0
-
 def cmd_rsi_loop(args):
     global STATE_DIR
     STATE_DIR = Path(args.state_dir)
-    levels = [int(l) for l in args.levels.split(",") if l.strip()]
-    run_rsi_loop(args.generations, args.rounds, levels, args.population, args.universes, mode=args.mode, freeze_eval=args.freeze_eval)
+    run_rsi_loop(
+        args.generations,
+        args.rounds,
+        args.population,
+        args.universes,
+        mode=args.mode,
+        freeze_eval=args.freeze_eval,
+        meta_meta=args.meta_meta,
+    )
     return 0
 
 def cmd_meta_meta(args):
@@ -4531,7 +4792,7 @@ def cmd_transfer_bench(args):
     return 0
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="UNIFIED_RSI_EXTENDED", description="True RSI Engine with L0-L5 Self-Modification")
+    p = argparse.ArgumentParser(prog="UNIFIED_RSI_EXTENDED", description="True RSI Engine with hard gates and rollback")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("selftest")
@@ -4568,23 +4829,15 @@ def build_parser():
     b.add_argument("--state-dir", default=".rsi_state")
     b.set_defaults(fn=cmd_best)
 
-    a = sub.add_parser("autopatch")
-    a.add_argument("--levels", default="0,1,3")
-    a.add_argument("--candidates", type=int, default=4)
-    a.add_argument("--apply", action="store_true")
-    a.add_argument("--state-dir", default=".rsi_state")
-    a.add_argument("--mode", default="", choices=["", "solver", "learner", "algo"])
-    a.set_defaults(fn=cmd_autopatch)
-
     r = sub.add_parser("rsi-loop")
     r.add_argument("--generations", type=int, default=50)
     r.add_argument("--rounds", type=int, default=5)
-    r.add_argument("--levels", default="0,1,3")
     r.add_argument("--population", type=int, default=64)
     r.add_argument("--universes", type=int, default=2)
     r.add_argument("--state-dir", default=".rsi_state")
     r.add_argument("--mode", default="solver", choices=["solver", "learner", "algo"])
     r.add_argument("--freeze-eval", action=argparse.BooleanOptionalAction, default=True)
+    r.add_argument("--meta-meta", action="store_true", help="Run meta-meta loop instead of standard RSI rounds")
     r.set_defaults(fn=cmd_rsi_loop)
 
     mm = sub.add_parser("meta-meta")
